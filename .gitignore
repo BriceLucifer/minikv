@@ -1,1 +1,5 @@
 /target
+/build
+/cmake-build-*
+/compile_commands.json
+/.cache

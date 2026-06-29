@@ -1,0 +1,52 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(minikv
+  VERSION 0.1.0
+  LANGUAGES CXX
+)
+
+include(FetchContent)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(MINIKV_BUILD_TESTS "Build minikv tests" ON)
+
+set(LEVELDB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LEVELDB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(LEVELDB_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  leveldb
+  GIT_REPOSITORY https://github.com/google/leveldb.git
+  GIT_TAG main
+)
+
+FetchContent_MakeAvailable(leveldb)
+
+add_library(mkv_core STATIC
+  src/record.cpp
+  src/placement.cpp
+  src/index.cpp
+  src/server.cpp
+  src/volume_client.cpp
+)
+
+target_include_directories(mkv_core
+  PUBLIC
+    ${PROJECT_SOURCE_DIR}/include
+)
+
+target_compile_features(mkv_core PUBLIC cxx_std_20)
+
+target_link_libraries(mkv_core
+  PRIVATE
+    leveldb
+)
+
+if(MINIKV_BUILD_TESTS)
+  include(CTest)
+  add_subdirectory(tests)
+endif()

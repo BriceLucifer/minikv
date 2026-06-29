@@ -1,0 +1,11 @@
+CompileFlags:
+  CompilationDatabase: build/debug
+  Add:
+    - -Wall
+    - -Wextra
+    - -Wpedantic
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+InlayHints:
+  Enabled: Yes
