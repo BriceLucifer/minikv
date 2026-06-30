@@ -14,12 +14,14 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     key locking.
   - Query/list JSON responses for `?list` and `?unlinked`.
   - nginx/WebDAV end-to-end smoke coverage for `PUT`, redirecting `GET`,
-    `HEAD`, and `DELETE`.
+    `HEAD`, `rebuild`, and `DELETE`.
+  - Command-line `rebuild` support for regenerating LevelDB metadata from
+    existing nginx/WebDAV volume files.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug --output-on-failure` with `54/54 tests passed`
+  - `ctest --preset debug --output-on-failure` with `62/62 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -44,38 +46,31 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   conflict handling.
 - LevelDB prefix scanning plus JSON query responses for `?list`, `?unlinked`,
   `start`, and `limit`.
-- nginx/WebDAV end-to-end CTest smoke test.
+- Command-line `rebuild` that clears LevelDB, scans nginx/WebDAV autoindex
+  JSON, decodes base64 object names, and reconstructs records.
+- nginx/WebDAV end-to-end CTest smoke test, including rebuild recovery.
 - Master executable entry point with Go-style server flags.
 
 ## Next
 
-1. Implement `rebuild`.
-   - Clear the target LevelDB.
-   - Scan nginx/WebDAV volume directory JSON.
-   - Decode base64 object file names back into keys.
-   - Reconstruct records in LevelDB.
-   - Add unit coverage for scan/rebuild helpers and an nginx-backed smoke test.
-
-2. Implement `rebalance`.
+1. Implement `rebalance`.
    - Iterate records from LevelDB.
    - Verify existing replicas with `HEAD`.
    - Copy data to target volumes, update metadata, and delete stale replicas.
    - Add focused unit tests plus an nginx-backed smoke test.
 
-3. Improve GET/HEAD parity with the Go server.
+2. Improve GET/HEAD parity with the Go server.
    - Files: `include/server.hpp`, `src/server.cpp`, `tests/server_test.cpp`.
    - Match the random replica probing order from Go.
    - Decide whether to keep C++ route status `302` exactly or preserve any compatibility aliases.
 
-4. Revisit non-standard methods and advanced compatibility.
+3. Revisit non-standard methods and advanced compatibility.
    - `UNLINK` is implemented in the business layer but not exposed through `cpp-httplib` routes because unknown HTTP methods are rejected before routing.
    - Add HTTP `REBALANCE` method support after command-line rebalance is stable.
    - Delay S3 multipart until rebuild/rebalance are stable.
 
 ## Remaining Capability Gaps
 
-- Recovery: command-line `rebuild` is still missing, so a LevelDB index cannot
-  yet be regenerated from existing nginx/WebDAV volume files.
 - Migration: command-line `rebalance` is still missing, so changing the volume
   set cannot yet copy objects to their new preferred replicas.
 - Read distribution: GET/HEAD replica probing works, but still probes in stored

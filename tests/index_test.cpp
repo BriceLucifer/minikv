@@ -83,6 +83,31 @@ TEST(IndexTest, DeleteRecordRemovesKey) {
   cleanup();
 }
 
+TEST(IndexTest, ClearRemovesAllRecords) {
+  const auto path = testDbPath("clear-records");
+  const auto cleanup = [&] { std::filesystem::remove_all(path); };
+
+  {
+    minikv::index::LevelDbIndex index{path};
+    const auto rec = minikv::record::Record{
+        {"volume-a"},
+        minikv::record::Deleted::NO,
+        "",
+    };
+
+    ASSERT_TRUE(index.putRecord("/alpha", rec));
+    ASSERT_TRUE(index.putRecord("/beta", rec));
+
+    EXPECT_TRUE(index.clear());
+
+    EXPECT_EQ(index.getRecord("/alpha").deleted, minikv::record::Deleted::HARD);
+    EXPECT_EQ(index.getRecord("/beta").deleted, minikv::record::Deleted::HARD);
+    EXPECT_TRUE(index.listRecords("/", "", 0).records.empty());
+  }
+
+  cleanup();
+}
+
 TEST(IndexTest, ListRecordsScansPrefixFromOptionalStart) {
   const auto path = testDbPath("list-records");
   const auto cleanup = [&] { std::filesystem::remove_all(path); };

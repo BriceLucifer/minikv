@@ -159,6 +159,34 @@ if [[ "$head_status" != "302" ]]; then
   exit 1
 fi
 
+kill "$MASTER_PID" >/dev/null 2>&1 || true
+wait "$MASTER_PID" >/dev/null 2>&1 || true
+MASTER_PID=""
+rm -rf "$DB_PATH"
+
+"$MKV_BIN" \
+  -volumes "127.0.0.1:$VOLUME_PORT" \
+  -db "$DB_PATH" \
+  -replicas 1 \
+  -subvolumes 1 \
+  rebuild >>"$MASTER_LOG" 2>&1
+
+"$MKV_BIN" \
+  -volumes "127.0.0.1:$VOLUME_PORT" \
+  -db "$DB_PATH" \
+  -replicas 1 \
+  -subvolumes 1 \
+  -port "$MASTER_PORT" \
+  server >>"$MASTER_LOG" 2>&1 &
+MASTER_PID=$!
+wait_http_status "http://127.0.0.1:$MASTER_PORT/__missing__" "404"
+
+curl -sS -L -o "$GET_BODY" "http://127.0.0.1:$MASTER_PORT/hello"
+if ! cmp -s "$PUT_BODY" "$GET_BODY"; then
+  echo "GET -L body after rebuild did not match PUT body" >&2
+  exit 1
+fi
+
 delete_status=$(curl -sS -o /dev/null -w "%{http_code}" \
   -X DELETE "http://127.0.0.1:$MASTER_PORT/hello")
 if [[ "$delete_status" != "204" ]]; then

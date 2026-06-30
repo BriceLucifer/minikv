@@ -38,6 +38,7 @@ class LevelDbIndex {
   record::Record getRecord(std::string_view key) const;
   bool putRecord(std::string_view key, const record::Record &rec);
   bool deleteRecord(std::string_view key);
+  bool clear();
   ListRecordsResult listRecords(std::string_view prefix, std::string_view start,
                                 std::size_t limit) const;
 

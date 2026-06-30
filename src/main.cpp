@@ -1,4 +1,5 @@
 #include "cli.hpp"
+#include "rebuild.hpp"
 #include "server.hpp"
 
 #include <httplib.h>
@@ -21,9 +22,18 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (parsed.options.command == "rebuild") {
+    return minikv::rebuild::run(minikv::rebuild::Options{
+        .db_path = parsed.options.app.db_path,
+        .volumes = parsed.options.app.volumes,
+        .replicas = parsed.options.app.replicas,
+        .subvolumes = parsed.options.app.subvolumes,
+    });
+  }
+
   if (parsed.options.command != "server") {
     // Accepted by the parser for command-line parity, but implementation is
-    // intentionally deferred until rebuild/rebalance logic is ported.
+    // intentionally deferred until rebalance logic is ported.
     std::cerr << parsed.options.command << " is not implemented yet\n";
     return 1;
   }

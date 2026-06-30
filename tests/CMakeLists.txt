@@ -15,6 +15,7 @@ add_executable(mkv_tests
   hash_test.cpp
   http_dependency_test.cpp
   record_test.cpp
+  rebuild_test.cpp
   placement_test.cpp
   index_test.cpp
   server_test.cpp

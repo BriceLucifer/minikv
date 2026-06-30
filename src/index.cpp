@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace minikv::index {
 
@@ -59,6 +60,29 @@ bool LevelDbIndex::putRecord(std::string_view key, const record::Record &rec) {
 bool LevelDbIndex::deleteRecord(std::string_view key) {
   const auto status = db_->Delete(leveldb::WriteOptions{}, toString(key));
   return status.ok();
+}
+
+bool LevelDbIndex::clear() {
+  auto it = std::unique_ptr<leveldb::Iterator>{
+      db_->NewIterator(leveldb::ReadOptions{})};
+  auto keys = std::vector<std::string>{};
+
+  for (it->SeekToFirst(); it->Valid(); it->Next()) {
+    keys.push_back(it->key().ToString());
+  }
+
+  if (!it->status().ok()) {
+    throw std::runtime_error(it->status().ToString());
+  }
+
+  for (const auto &key : keys) {
+    const auto status = db_->Delete(leveldb::WriteOptions{}, key);
+    if (!status.ok()) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 ListRecordsResult LevelDbIndex::listRecords(std::string_view prefix,
