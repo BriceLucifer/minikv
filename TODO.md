@@ -6,7 +6,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 - Current direction: keep the original architecture of C++ master plus external
   nginx/WebDAV volume servers. Do not replace nginx with a C++ volume server.
-- Current uncommitted work includes:
+- Recently completed work includes:
   - Go-style CLI parsing and `mkv server` executable entry point.
   - GET/HEAD behavior closer to Go: fallback redirects, `Content-Md5`,
     `Key-Volumes`, `Key-Balance`, and replica `HEAD` probing.

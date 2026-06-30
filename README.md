@@ -37,6 +37,80 @@ The project uses CMake presets and fetches third-party dependencies during
 configure. You do not need to install GoogleTest, LevelDB, BoringSSL, or
 cpp-httplib with `apt`.
 
+## Mental Model
+
+The shortest way to understand minikeyvalue is:
+
+```text
+master stores metadata; volume servers store bytes.
+```
+
+It is not a plain in-process `key -> value` map. It is closer to a small object
+store:
+
+```text
+key -> LevelDB metadata -> real file on a volume server
+```
+
+For example, a client writes:
+
+```text
+PUT /hello
+body = "payload"
+```
+
+The master does not store `"payload"` in LevelDB. Instead, it:
+
+1. Chooses replica volumes with `key2volume`.
+2. Writes a `SOFT` record to LevelDB so readers do not see a partial write.
+3. Sends the bytes to each selected nginx/WebDAV volume server.
+4. Writes a final `NO` record after all replicas succeed.
+
+The LevelDB record says where the object lives:
+
+```text
+/hello -> volume-a,volume-b
+```
+
+The actual bytes live as files on the volume servers.
+
+Reads work the other way around:
+
+1. The client asks the master for `GET /hello`.
+2. The master reads the LevelDB record.
+3. The master probes replicas with `HEAD`.
+4. The master returns a `302 Location: http://volume/...` redirect.
+5. The client downloads bytes directly from the volume server.
+
+This avoids sending large downloads through the master. The master stays a
+metadata and coordination service; nginx serves the large file bodies.
+
+Deletes are also coordinated through metadata:
+
+1. The master reads the current record.
+2. It writes a `SOFT` record to mark the key as being deleted.
+3. It asks each volume server to delete the file.
+4. It removes the LevelDB key after remote deletes succeed.
+
+Deletion states:
+
+```text
+NO    object exists and can be read
+SOFT  write/delete is in progress; readers should treat it as unavailable
+HARD  no LevelDB record exists for this key
+```
+
+The important helper functions map onto this model:
+
+```text
+record      encode/decode LevelDB metadata
+placement   choose replica volumes and object file paths
+index       read/write LevelDB records
+volume_client  talk to nginx/WebDAV volume servers
+server      coordinate PUT, GET/HEAD redirect, and DELETE
+cli/main    start the C++ master process
+```
+
 ## Dependencies
 
 Required locally:
