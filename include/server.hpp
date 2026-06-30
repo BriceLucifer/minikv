@@ -11,6 +11,10 @@
 #include <unordered_set>
 #include <vector>
 
+namespace httplib {
+class Server;
+} // namespace httplib
+
 namespace minikv::server {
 
 struct AppOptions {
@@ -24,6 +28,22 @@ struct AppOptions {
   std::chrono::milliseconds volume_timeout{1000};
 };
 
+struct WriteResult {
+  int status;
+  record::Record record;
+};
+
+struct ReadResult {
+  int status;
+  std::string redirect_url;
+  record::Record record;
+};
+
+struct DeleteResult {
+  int status;
+  record::Record record;
+};
+
 class App {
  public:
   explicit App(AppOptions options);
@@ -35,6 +55,10 @@ class App {
   bool putRecord(std::string_view key, const record::Record &rec);
   bool deleteRecord(std::string_view key);
 
+  WriteResult writeToReplicas(std::string_view key, std::string_view value);
+  ReadResult readFromReplica(std::string_view key);
+  DeleteResult deleteFromReplicas(std::string_view key, bool unlink = false);
+
   const AppOptions &options() const;
 
  private:
@@ -43,5 +67,7 @@ class App {
   mutable std::mutex lock_mutex_;
   std::unordered_set<std::string> locks_;
 };
+
+void registerRoutes(httplib::Server &server, App &app);
 
 } // namespace minikv::server

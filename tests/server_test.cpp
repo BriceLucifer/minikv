@@ -1,11 +1,17 @@
 #include "server.hpp"
+
+#include "hash.hpp"
+#include "placement.hpp"
 #include "record.hpp"
 
 #include <gtest/gtest.h>
+#include <httplib.h>
 
 #include <chrono>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -31,6 +37,38 @@ minikv::server::AppOptions appOptions(std::string_view name) {
       .volume_timeout = std::chrono::milliseconds{250},
   };
 }
+
+class LocalVolumeServer {
+public:
+  httplib::Server server;
+
+  void start() {
+    port_ = server.bind_to_any_port("127.0.0.1");
+    if (port_ < 0) {
+      throw std::runtime_error("failed to bind test volume server");
+    }
+
+    worker_ = std::thread([this] {
+      server.listen_after_bind();
+    });
+    server.wait_until_ready();
+  }
+
+  std::string volume() const {
+    return "127.0.0.1:" + std::to_string(port_);
+  }
+
+  ~LocalVolumeServer() {
+    server.stop();
+    if (worker_.joinable()) {
+      worker_.join();
+    }
+  }
+
+private:
+  int port_ = -1;
+  std::thread worker_;
+};
 
 } // namespace
 
@@ -96,6 +134,441 @@ TEST(ServerAppTest, ProxiesRecordOperationsToIndex) {
 
     EXPECT_TRUE(app.deleteRecord("hello"));
     EXPECT_EQ(app.getRecord("hello").deleted, minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, WriteToReplicasStoresRemoteBodyAndFinalRecord) {
+  std::string received_path;
+  std::string received_body;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const httplib::Request &req,
+                                  httplib::Response &res) {
+    received_path = req.path;
+    received_body = req.body;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("write-to-replicas");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.md5sum = true;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+
+    const auto result = app.writeToReplicas("/hello", "payload");
+
+    EXPECT_EQ(result.status, 201);
+    EXPECT_EQ(result.record.rvolumes, options.volumes);
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::NO);
+    EXPECT_EQ(result.record.hash, minikv::md5_hex("payload"));
+    EXPECT_EQ(received_path, minikv::placement::key2path("/hello"));
+    EXPECT_EQ(received_body, "payload");
+
+    const auto loaded = app.getRecord("/hello");
+    EXPECT_EQ(loaded.rvolumes, result.record.rvolumes);
+    EXPECT_EQ(loaded.deleted, result.record.deleted);
+    EXPECT_EQ(loaded.hash, result.record.hash);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, ReadFromReplicaReturnsRedirectForLiveRecord) {
+  const auto options = appOptions("read-redirect");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {"volume-a", "volume-b"},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.readFromReplica("/hello");
+
+    EXPECT_EQ(result.status, 307);
+    EXPECT_EQ(result.redirect_url,
+              "http://volume-a" + minikv::placement::key2path("/hello"));
+    EXPECT_EQ(result.record.rvolumes, rec.rvolumes);
+    EXPECT_EQ(result.record.deleted, rec.deleted);
+    EXPECT_EQ(result.record.hash, rec.hash);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForMissingKey) {
+  const auto options = appOptions("read-missing");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+
+    const auto result = app.readFromReplica("/missing");
+
+    EXPECT_EQ(result.status, 404);
+    EXPECT_TRUE(result.redirect_url.empty());
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::HARD);
+    EXPECT_TRUE(result.record.rvolumes.empty());
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForSoftDeletedRecord) {
+  const auto options = appOptions("read-soft-deleted");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {"volume-a"},
+        .deleted = minikv::record::Deleted::SOFT,
+        .hash = "",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.readFromReplica("/hello");
+
+    EXPECT_EQ(result.status, 404);
+    EXPECT_TRUE(result.redirect_url.empty());
+    EXPECT_EQ(result.record.rvolumes, rec.rvolumes);
+    EXPECT_EQ(result.record.deleted, rec.deleted);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForRecordWithoutVolumes) {
+  const auto options = appOptions("read-empty-volumes");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.readFromReplica("/hello");
+
+    EXPECT_EQ(result.status, 404);
+    EXPECT_TRUE(result.redirect_url.empty());
+    EXPECT_TRUE(result.record.rvolumes.empty() ||
+                result.record.rvolumes.front().empty());
+    EXPECT_EQ(result.record.deleted, rec.deleted);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, DeleteFromReplicasReturnsNotFoundForMissingKey) {
+  const auto options = appOptions("delete-missing");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+
+    const auto result = app.deleteFromReplicas("/missing");
+
+    EXPECT_EQ(result.status, 404);
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::HARD);
+    EXPECT_TRUE(result.record.rvolumes.empty());
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, DeleteFromReplicasRespectsProtectForLiveRecord) {
+  const auto options = appOptions("delete-protected");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {"volume-a"},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.deleteFromReplicas("/hello");
+
+    EXPECT_EQ(result.status, 403);
+    EXPECT_EQ(result.record.rvolumes, rec.rvolumes);
+    EXPECT_EQ(result.record.deleted, rec.deleted);
+    EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::NO);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, DeleteFromReplicasDeletesRemoteObjectsAndHardDeletesRecord) {
+  std::vector<std::string> deleted_paths;
+
+  LocalVolumeServer volume;
+  volume.server.Delete(R"(/.*)", [&](const httplib::Request &req,
+                                     httplib::Response &res) {
+    deleted_paths.push_back(req.path);
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("delete-remote");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {volume.volume()},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "321c3cf486ed509164edec1e1981fec8",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.deleteFromReplicas("/hello");
+
+    ASSERT_EQ(deleted_paths.size(), 1U);
+    EXPECT_EQ(deleted_paths.front(), minikv::placement::key2path("/hello"));
+    EXPECT_EQ(result.status, 204);
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::HARD);
+    EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, DeleteFromReplicasKeepsSoftRecordWhenRemoteDeleteFails) {
+  LocalVolumeServer volume;
+  volume.server.Delete(R"(/.*)", [](const httplib::Request &,
+                                    httplib::Response &res) {
+    res.status = 500;
+  });
+  volume.start();
+
+  auto options = appOptions("delete-remote-fails");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {volume.volume()},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "321c3cf486ed509164edec1e1981fec8",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.deleteFromReplicas("/hello");
+
+    EXPECT_EQ(result.status, 500);
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::SOFT);
+    EXPECT_EQ(result.record.rvolumes, rec.rvolumes);
+    EXPECT_EQ(result.record.hash, rec.hash);
+
+    const auto loaded = app.getRecord("/hello");
+    EXPECT_EQ(loaded.deleted, minikv::record::Deleted::SOFT);
+    EXPECT_EQ(loaded.rvolumes, rec.rvolumes);
+    EXPECT_EQ(loaded.hash, rec.hash);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, DeleteFromReplicasUnlinkOnlySoftDeletesMetadata) {
+  LocalVolumeServer volume;
+  auto remote_delete_called = false;
+  volume.server.Delete(R"(/.*)", [&](const httplib::Request &,
+                                     httplib::Response &res) {
+    remote_delete_called = true;
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("delete-unlink");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {volume.volume()},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "321c3cf486ed509164edec1e1981fec8",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.deleteFromReplicas("/hello", true);
+
+    EXPECT_EQ(result.status, 204);
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::SOFT);
+    EXPECT_FALSE(remote_delete_called);
+
+    const auto loaded = app.getRecord("/hello");
+    EXPECT_EQ(loaded.deleted, minikv::record::Deleted::SOFT);
+    EXPECT_EQ(loaded.rvolumes, rec.rvolumes);
+    EXPECT_EQ(loaded.hash, rec.hash);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, DeleteFromReplicasUnlinkReturnsNotFoundForSoftDeletedRecord) {
+  const auto options = appOptions("delete-unlink-soft");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {"volume-a"},
+        .deleted = minikv::record::Deleted::SOFT,
+        .hash = "",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    const auto result = app.deleteFromReplicas("/hello", true);
+
+    EXPECT_EQ(result.status, 404);
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::SOFT);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, PutRouteWritesToReplicas) {
+  std::string received_body;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const httplib::Request &req,
+                                  httplib::Response &res) {
+    received_body = req.body;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-put");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.md5sum = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto res = client.Put("/hello", "payload", "application/octet-stream");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 201);
+    EXPECT_EQ(received_body, "payload");
+
+    const auto rec = app.getRecord("/hello");
+    EXPECT_EQ(rec.deleted, minikv::record::Deleted::NO);
+    EXPECT_EQ(rec.rvolumes, options.volumes);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
+  auto options = appOptions("route-read");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/hello",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto expected_location =
+        "http://volume-a" + minikv::placement::key2path("/hello");
+
+    const auto get_res = client.Get("/hello");
+    ASSERT_TRUE(get_res);
+    EXPECT_EQ(get_res->status, 307);
+    EXPECT_EQ(get_res->get_header_value("Location"), expected_location);
+
+    const auto head_res = client.Head("/hello");
+    ASSERT_TRUE(head_res);
+    EXPECT_EQ(head_res->status, 307);
+    EXPECT_EQ(head_res->get_header_value("Location"), expected_location);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, DeleteRouteDeletesRemoteObjects) {
+  auto remote_delete_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Delete(R"(/.*)", [&](const httplib::Request &,
+                                     httplib::Response &res) {
+    remote_delete_called = true;
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("route-delete");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/hello",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto res = client.Delete("/hello");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 204);
+    EXPECT_TRUE(remote_delete_called);
+    EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
   }
 
   cleanup();

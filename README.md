@@ -141,9 +141,10 @@ tests/
 
 - `hash.hpp/cpp` wraps MD5 through BoringSSL's OpenSSL-compatible EVP API.
 - `index.hpp/cpp` wraps LevelDB for record metadata.
-- `server.hpp/cpp` currently holds the app state and key lock table.
+- `server.hpp/cpp` holds the app state, key lock table, core write/read/delete
+  flows, and thin HTTP route registration.
 - `volume_client.hpp/cpp` maps the Go remote access helpers onto cpp-httplib.
 - `nlohmann/json` is available for upcoming HTTP query/response handling.
 - Tests are registered through GoogleTest and CTest.
-- Volume client tests start an in-process localhost HTTP server, so they need
-  permission to bind a loopback port.
+- Server and volume client tests start in-process localhost HTTP servers, so
+  they need permission to bind loopback ports.

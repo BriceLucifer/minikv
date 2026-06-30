@@ -16,21 +16,26 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - cpp-httplib dependency and remote volume client implementation.
 - nlohmann/json dependency for upcoming HTTP JSON handling.
 - Volume client tests using an in-process localhost HTTP server.
+- Basic server app flows for write, read redirect, delete, and unlink.
+- Thin `registerRoutes` HTTP wiring for `PUT`, `GET`, `HEAD`, and `DELETE`.
 
 ## Next
 
-1. Implement basic server HTTP behavior.
-   - Files: `include/server.hpp`, `src/server.cpp`, `tests/server_test.cpp`.
-   - Start with `PUT`, `GET`, and `DELETE`.
-   - Match Go's `WriteToReplicas`, `Get`, and `Delete` flow.
-   - Use `volume_client` for remote volume operations.
-   - Delay S3 multipart, rebuild, rebalance, list, and unlinked support until the core flow is stable.
-
-2. Add query/JSON responses.
+1. Add query/JSON responses.
    - Match the useful parts of Go's `QueryHandler`.
    - Use nlohmann/json for response construction.
 
-3. Add end-to-end smoke test later.
+2. Improve GET/HEAD parity with the Go server.
+   - Files: `include/server.hpp`, `src/server.cpp`, `tests/server_test.cpp`.
+   - Add fallback redirects when configured.
+   - Add `Content-Md5`, `Key-Volumes`, and `Key-Balance` response metadata.
+   - Probe replicas with `remoteHead` before redirecting.
+
+3. Add an executable entry point.
+   - Parse db path, volumes, replica count, subvolume count, protect, md5sum, and listen address.
+   - Construct `App`, register routes, and start the HTTP server.
+
+4. Add end-to-end smoke test later.
    - Start volume servers.
    - Start C++ master.
    - Use curl or pytest to verify PUT, GET, and DELETE.
