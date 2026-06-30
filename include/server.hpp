@@ -37,6 +37,9 @@ struct ReadResult {
   int status;
   std::string redirect_url;
   record::Record record;
+  std::string content_md5;
+  std::string key_volumes;
+  std::string key_balance;
 };
 
 struct DeleteResult {

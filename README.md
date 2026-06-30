@@ -67,6 +67,12 @@ Build debug:
 cmake --build --preset debug
 ```
 
+The debug build produces:
+
+```text
+build/debug/mkv
+```
+
 Run tests:
 
 ```bash
@@ -77,6 +83,37 @@ Run the test binary directly:
 
 ```bash
 ./build/debug/tests/mkv_tests
+```
+
+## Run With nginx Volumes
+
+This rewrite keeps the original minikeyvalue storage model: the master is C++,
+while volume servers are external nginx/WebDAV file servers.
+
+Start volume servers using the original `volume` script or equivalent nginx
+configuration:
+
+```bash
+PORT=3001 ./volume /tmp/volume1/ &
+PORT=3002 ./volume /tmp/volume2/ &
+PORT=3003 ./volume /tmp/volume3/ &
+```
+
+Start the C++ master:
+
+```bash
+./build/debug/mkv \
+  -volumes localhost:3001,localhost:3002,localhost:3003 \
+  -db /tmp/indexdb \
+  server
+```
+
+Then use the original API shape:
+
+```bash
+curl -v -L -X PUT -d hello localhost:3000/hello
+curl -v -L localhost:3000/hello
+curl -v -L -X DELETE localhost:3000/hello
 ```
 
 ## Release Build
@@ -144,6 +181,7 @@ tests/
 - `server.hpp/cpp` holds the app state, key lock table, core write/read/delete
   flows, and thin HTTP route registration.
 - `volume_client.hpp/cpp` maps the Go remote access helpers onto cpp-httplib.
+- `cli.hpp/cpp` parses the Go-style master flags used by `build/debug/mkv`.
 - `nlohmann/json` is available for upcoming HTTP query/response handling.
 - Tests are registered through GoogleTest and CTest.
 - Server and volume client tests start in-process localhost HTTP servers, so

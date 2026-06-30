@@ -11,6 +11,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(mkv_tests
   base64_test.cpp
+  cli_test.cpp
   hash_test.cpp
   http_dependency_test.cpp
   record_test.cpp

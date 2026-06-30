@@ -181,33 +181,47 @@ TEST(ServerAppTest, WriteToReplicasStoresRemoteBodyAndFinalRecord) {
 }
 
 TEST(ServerAppTest, ReadFromReplicaReturnsRedirectForLiveRecord) {
-  const auto options = appOptions("read-redirect");
+  LocalVolumeServer volume;
+  volume.server.Get(R"(/.*)", [](const httplib::Request &,
+                                 httplib::Response &res) {
+    res.status = 200;
+  });
+  volume.start();
+
+  auto options = appOptions("read-redirect");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
   {
     minikv::server::App app{options};
     const auto rec = minikv::record::Record{
-        .rvolumes = {"volume-a", "volume-b"},
+        .rvolumes = {volume.volume()},
         .deleted = minikv::record::Deleted::NO,
-        .hash = "",
+        .hash = "321c3cf486ed509164edec1e1981fec8",
     };
     ASSERT_TRUE(app.putRecord("/hello", rec));
 
     const auto result = app.readFromReplica("/hello");
 
-    EXPECT_EQ(result.status, 307);
+    EXPECT_EQ(result.status, 302);
     EXPECT_EQ(result.redirect_url,
-              "http://volume-a" + minikv::placement::key2path("/hello"));
+              "http://" + volume.volume() + minikv::placement::key2path("/hello"));
     EXPECT_EQ(result.record.rvolumes, rec.rvolumes);
     EXPECT_EQ(result.record.deleted, rec.deleted);
     EXPECT_EQ(result.record.hash, rec.hash);
+    EXPECT_EQ(result.content_md5, rec.hash);
+    EXPECT_EQ(result.key_volumes, volume.volume());
+    EXPECT_EQ(result.key_balance, "balanced");
   }
 
   cleanup();
 }
 
 TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForMissingKey) {
-  const auto options = appOptions("read-missing");
+  auto options = appOptions("read-missing");
+  options.fallback = "";
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
   {
@@ -224,8 +238,27 @@ TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForMissingKey) {
   cleanup();
 }
 
+TEST(ServerAppTest, ReadFromReplicaRedirectsMissingKeyToFallback) {
+  auto options = appOptions("read-fallback");
+  options.fallback = "fallback-volume";
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+
+    const auto result = app.readFromReplica("/missing");
+
+    EXPECT_EQ(result.status, 302);
+    EXPECT_EQ(result.redirect_url, "http://fallback-volume/missing");
+    EXPECT_EQ(result.record.deleted, minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
 TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForSoftDeletedRecord) {
-  const auto options = appOptions("read-soft-deleted");
+  auto options = appOptions("read-soft-deleted");
+  options.fallback = "";
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
   {
@@ -249,7 +282,8 @@ TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForSoftDeletedRecord) {
 }
 
 TEST(ServerAppTest, ReadFromReplicaReturnsNotFoundForRecordWithoutVolumes) {
-  const auto options = appOptions("read-empty-volumes");
+  auto options = appOptions("read-empty-volumes");
+  options.fallback = "";
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
   {
@@ -495,7 +529,17 @@ TEST(ServerRouteTest, PutRouteWritesToReplicas) {
 }
 
 TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
+  LocalVolumeServer volume;
+  volume.server.Get(R"(/.*)", [](const httplib::Request &,
+                                 httplib::Response &res) {
+    res.status = 200;
+  });
+  volume.start();
+
   auto options = appOptions("route-read");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
   {
@@ -503,9 +547,9 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
     ASSERT_TRUE(app.putRecord(
         "/hello",
         minikv::record::Record{
-            .rvolumes = {"volume-a"},
+            .rvolumes = {volume.volume()},
             .deleted = minikv::record::Deleted::NO,
-            .hash = "",
+            .hash = "321c3cf486ed509164edec1e1981fec8",
         }));
 
     LocalVolumeServer master;
@@ -514,17 +558,25 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
 
     httplib::Client client("http://" + master.volume());
     const auto expected_location =
-        "http://volume-a" + minikv::placement::key2path("/hello");
+        "http://" + volume.volume() + minikv::placement::key2path("/hello");
 
     const auto get_res = client.Get("/hello");
     ASSERT_TRUE(get_res);
-    EXPECT_EQ(get_res->status, 307);
+    EXPECT_EQ(get_res->status, 302);
     EXPECT_EQ(get_res->get_header_value("Location"), expected_location);
+    EXPECT_EQ(get_res->get_header_value("Content-Md5"),
+              "321c3cf486ed509164edec1e1981fec8");
+    EXPECT_EQ(get_res->get_header_value("Key-Volumes"), volume.volume());
+    EXPECT_EQ(get_res->get_header_value("Key-Balance"), "balanced");
 
     const auto head_res = client.Head("/hello");
     ASSERT_TRUE(head_res);
-    EXPECT_EQ(head_res->status, 307);
+    EXPECT_EQ(head_res->status, 302);
     EXPECT_EQ(head_res->get_header_value("Location"), expected_location);
+    EXPECT_EQ(head_res->get_header_value("Content-Md5"),
+              "321c3cf486ed509164edec1e1981fec8");
+    EXPECT_EQ(head_res->get_header_value("Key-Volumes"), volume.volume());
+    EXPECT_EQ(head_res->get_header_value("Key-Balance"), "balanced");
   }
 
   cleanup();

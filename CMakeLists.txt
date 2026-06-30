@@ -66,6 +66,7 @@ add_library(mkv_core STATIC
   src/index.cpp
   src/server.cpp
   src/volume_client.cpp
+  src/cli.cpp
 )
 
 target_include_directories(mkv_core
@@ -83,6 +84,17 @@ target_link_libraries(mkv_core
     crypto
     leveldb
 )
+
+add_executable(mkv
+  src/main.cpp
+)
+
+target_link_libraries(mkv
+  PRIVATE
+    mkv_core
+)
+
+target_compile_features(mkv PRIVATE cxx_std_23)
 
 if(MINIKV_BUILD_TESTS)
   include(CTest)

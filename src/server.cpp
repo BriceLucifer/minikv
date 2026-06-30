@@ -20,9 +20,31 @@ std::string toString(std::string_view value) {
   return std::string{value.data(), value.size()};
 }
 
+std::string joinVolumes(const std::vector<std::string> &volumes) {
+  auto joined = std::string{};
+  for (const auto &volume : volumes) {
+    if (!joined.empty()) {
+      joined += ",";
+    }
+    joined += volume;
+  }
+  return joined;
+}
+
 void applyReadResult(const ReadResult &result, httplib::Response &res) {
+  // Route handlers stay thin: App methods decide status and metadata, while
+  // this adapter only translates the result into HTTP headers.
   res.status = result.status;
   res.set_header("Content-Length", "0");
+  if (!result.content_md5.empty()) {
+    res.set_header("Content-Md5", result.content_md5);
+  }
+  if (!result.key_volumes.empty()) {
+    res.set_header("Key-Volumes", result.key_volumes);
+  }
+  if (!result.key_balance.empty()) {
+    res.set_header("Key-Balance", result.key_balance);
+  }
   if (!result.redirect_url.empty()) {
     res.set_header("Location", result.redirect_url);
   }
@@ -56,6 +78,8 @@ bool App::deleteRecord(std::string_view key) {
 }
 
 WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
+  // Match the Go write flow: mark metadata SOFT before touching volumes so
+  // readers never see a partially replicated object as live.
   auto kvolumes = placement::key2volume(key, options_.volumes, options_.replicas,
                                         options_.subvolumes);
 
@@ -66,6 +90,8 @@ WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
 
   auto keypath = placement::key2path(key);
   for (const auto &volume : kvolumes) {
+    // Values are already materialized as a string_view here, unlike Go's
+    // one-shot io.Reader, so each replica can reuse the same buffer.
     const auto remote = "http://" + volume + keypath;
     try {
       volume_client::remotePut(remote, value);
@@ -88,21 +114,60 @@ WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
 
 ReadResult App::readFromReplica(std::string_view key) {
   const auto rec = getRecord(key);
-  if (rec.deleted != record::Deleted::NO || rec.rvolumes.empty() ||
-      rec.rvolumes.front().empty()) {
-    return ReadResult{
-        .status = 404,
-        .redirect_url = "",
-        .record = rec,
-    };
+  auto result = ReadResult{
+      .status = 404,
+      .redirect_url = "",
+      .record = rec,
+      .content_md5 = rec.hash,
+      .key_volumes = "",
+      .key_balance = "",
+  };
+
+  if (rec.deleted == record::Deleted::SOFT ||
+      rec.deleted == record::Deleted::HARD) {
+    // Go falls back to a configured fallback server for missing/deleted keys;
+    // otherwise the master returns a zero-length 404.
+    if (options_.fallback.empty()) {
+      return result;
+    }
+
+    result.status = 302;
+    result.redirect_url = "http://" + options_.fallback + toString(key);
+    return result;
   }
 
-  const auto redirect_url = "http://" + rec.rvolumes.front() + placement::key2path(key);
-  return ReadResult{
-      .status = 307,
-      .redirect_url = redirect_url,
-      .record = rec,
-  };
+  if (rec.rvolumes.empty() || rec.rvolumes.front().empty()) {
+    return result;
+  }
+
+  const auto kvolumes = placement::key2volume(key, options_.volumes,
+                                              options_.replicas,
+                                              options_.subvolumes);
+  result.key_volumes = joinVolumes(rec.rvolumes);
+  result.key_balance =
+      placement::needs_rebalance(rec.rvolumes, kvolumes) ? "unbalanced"
+                                                         : "balanced";
+
+  const auto keypath = placement::key2path(key);
+  for (const auto &volume : rec.rvolumes) {
+    if (volume.empty()) {
+      continue;
+    }
+
+    const auto remote = "http://" + volume + keypath;
+    try {
+      // Original minikeyvalue probes volume servers before redirecting. This
+      // avoids sending clients to a replica that is already known missing/down.
+      if (volume_client::remoteHead(remote, options_.volume_timeout)) {
+        result.status = 302;
+        result.redirect_url = remote;
+        return result;
+      }
+    } catch (const std::exception &) {
+    }
+  }
+
+  return result;
 }
 
 DeleteResult App::deleteFromReplicas(std::string_view key, bool unlink) {
@@ -126,6 +191,8 @@ DeleteResult App::deleteFromReplicas(std::string_view key, bool unlink) {
   }
 
   if (unlink) {
+    // UNLINK is a virtual delete in the Go project: metadata becomes SOFT, but
+    // remote volume files are left in place for later cleanup.
     return {204, pending};
   }
 
@@ -156,6 +223,8 @@ const AppOptions &App::options() const { return options_; }
 void registerRoutes(httplib::Server &server, App &app) {
   server.set_pre_routing_handler(
       [&app](const httplib::Request &req, httplib::Response &res) {
+        // cpp-httplib has no Server::Head helper, so HEAD is handled before
+        // normal routing and shares the GET/read decision path.
         if (req.method == "HEAD") {
           applyReadResult(app.readFromReplica(req.path), res);
           return httplib::Server::HandlerResponse::Handled;
