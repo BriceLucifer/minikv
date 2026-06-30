@@ -47,6 +47,12 @@ struct DeleteResult {
   record::Record record;
 };
 
+struct QueryResult {
+  int status;
+  std::string content_type;
+  std::string body;
+};
+
 class App {
  public:
   explicit App(AppOptions options);
@@ -61,6 +67,8 @@ class App {
   WriteResult writeToReplicas(std::string_view key, std::string_view value);
   ReadResult readFromReplica(std::string_view key);
   DeleteResult deleteFromReplicas(std::string_view key, bool unlink = false);
+  QueryResult query(std::string_view key, std::string_view operation,
+                    std::string_view start, std::string_view limit) const;
 
   const AppOptions &options() const;
 

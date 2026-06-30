@@ -6,7 +6,9 @@
 #include "volume_client.hpp"
 
 #include <httplib.h>
+#include <nlohmann/json.hpp>
 
+#include <charconv>
 #include <exception>
 #include <string>
 #include <string_view>
@@ -19,6 +21,28 @@ namespace {
 std::string toString(std::string_view value) {
   return std::string{value.data(), value.size()};
 }
+
+class KeyLockGuard {
+public:
+  KeyLockGuard(App &app, std::string_view key)
+      : app_(app), key_(toString(key)), locked_(app_.lockKey(key_)) {}
+
+  KeyLockGuard(const KeyLockGuard &) = delete;
+  KeyLockGuard &operator=(const KeyLockGuard &) = delete;
+
+  ~KeyLockGuard() {
+    if (locked_) {
+      app_.unlockKey(key_);
+    }
+  }
+
+  bool locked() const { return locked_; }
+
+private:
+  App &app_;
+  std::string key_;
+  bool locked_;
+};
 
 std::string joinVolumes(const std::vector<std::string> &volumes) {
   auto joined = std::string{};
@@ -48,6 +72,39 @@ void applyReadResult(const ReadResult &result, httplib::Response &res) {
   if (!result.redirect_url.empty()) {
     res.set_header("Location", result.redirect_url);
   }
+}
+
+std::string firstQueryOperation(const httplib::Request &req) {
+  const auto question = req.target.find('?');
+  if (question == std::string::npos || question + 1 >= req.target.size()) {
+    return "";
+  }
+
+  auto query = std::string_view{req.target}.substr(question + 1);
+  const auto ampersand = query.find('&');
+  if (ampersand != std::string_view::npos) {
+    query = query.substr(0, ampersand);
+  }
+
+  const auto equals = query.find('=');
+  if (equals != std::string_view::npos) {
+    query = query.substr(0, equals);
+  }
+
+  return toString(query);
+}
+
+bool parseSize(std::string_view value, std::size_t &out) {
+  const auto *begin = value.data();
+  const auto *end = value.data() + value.size();
+  auto parsed = std::size_t{0};
+  const auto result = std::from_chars(begin, end, parsed);
+  if (result.ec != std::errc{} || result.ptr != end) {
+    return false;
+  }
+
+  out = parsed;
+  return true;
 }
 
 } // namespace
@@ -218,6 +275,49 @@ DeleteResult App::deleteFromReplicas(std::string_view key, bool unlink) {
   return {204, record::Record{{}, record::Deleted::HARD, ""}};
 }
 
+QueryResult App::query(std::string_view key, std::string_view operation,
+                       std::string_view start, std::string_view limit) const {
+  if (operation != "list" && operation != "unlinked") {
+    return {.status = 403, .content_type = "", .body = ""};
+  }
+
+  auto parsed_limit = std::size_t{0};
+  if (!limit.empty() && !parseSize(limit, parsed_limit)) {
+    return {.status = 400, .content_type = "", .body = ""};
+  }
+
+  auto keys = std::vector<std::string>{};
+  auto next = std::string{};
+  const auto records = index_.listRecords(key, start, 0);
+  for (const auto &entry : records.records) {
+    const auto include =
+        (operation == "list" && entry.record.deleted == record::Deleted::NO) ||
+        (operation == "unlinked" &&
+         entry.record.deleted == record::Deleted::SOFT);
+    if (!include) {
+      continue;
+    }
+
+    if (keys.size() > 1000000) {
+      return {.status = 413, .content_type = "", .body = ""};
+    }
+
+    if (parsed_limit > 0 && keys.size() == parsed_limit) {
+      next = entry.key;
+      break;
+    }
+
+    keys.push_back(entry.key);
+  }
+
+  const auto body = nlohmann::json{
+      {"next", next},
+      {"keys", keys},
+  }.dump();
+
+  return {.status = 200, .content_type = "application/json", .body = body};
+}
+
 const AppOptions &App::options() const { return options_; }
 
 void registerRoutes(httplib::Server &server, App &app) {
@@ -235,6 +335,25 @@ void registerRoutes(httplib::Server &server, App &app) {
 
   server.Put(R"(/.*)", [&app](const httplib::Request &req,
                               httplib::Response &res) {
+    auto key_lock = KeyLockGuard{app, req.path};
+    if (!key_lock.locked()) {
+      res.status = 409;
+      res.set_header("Content-Length", "0");
+      return;
+    }
+
+    if (req.body.empty()) {
+      res.status = 411;
+      res.set_header("Content-Length", "0");
+      return;
+    }
+
+    if (app.getRecord(req.path).deleted == record::Deleted::NO) {
+      res.status = 403;
+      res.set_header("Content-Length", "0");
+      return;
+    }
+
     const auto result = app.writeToReplicas(req.path, req.body);
     res.status = result.status;
     res.set_header("Content-Length", "0");
@@ -242,11 +361,35 @@ void registerRoutes(httplib::Server &server, App &app) {
 
   server.Get(R"(/.*)", [&app](const httplib::Request &req,
                               httplib::Response &res) {
+    const auto operation = firstQueryOperation(req);
+    if (!operation.empty()) {
+      const auto result =
+          app.query(req.path, operation, req.get_param_value("start"),
+                    req.get_param_value("limit"));
+      res.status = result.status;
+      if (!result.content_type.empty()) {
+        res.set_header("Content-Type", result.content_type);
+      }
+      if (!result.body.empty()) {
+        res.set_content(result.body, result.content_type);
+      } else {
+        res.set_header("Content-Length", "0");
+      }
+      return;
+    }
+
     applyReadResult(app.readFromReplica(req.path), res);
   });
 
   server.Delete(R"(/.*)", [&app](const httplib::Request &req,
                                  httplib::Response &res) {
+    auto key_lock = KeyLockGuard{app, req.path};
+    if (!key_lock.locked()) {
+      res.status = 409;
+      res.set_header("Content-Length", "0");
+      return;
+    }
+
     const auto result = app.deleteFromReplicas(req.path);
     res.status = result.status;
     res.set_header("Content-Length", "0");

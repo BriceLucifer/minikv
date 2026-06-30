@@ -31,3 +31,8 @@ target_compile_features(mkv_tests PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(mkv_tests)
+
+add_test(
+  NAME NginxSmokeTest
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/nginx_smoke_test.sh $<TARGET_FILE:mkv>
+)

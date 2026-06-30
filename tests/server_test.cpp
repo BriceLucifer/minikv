@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 #include <httplib.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <filesystem>
@@ -528,6 +529,155 @@ TEST(ServerRouteTest, PutRouteWritesToReplicas) {
   cleanup();
 }
 
+TEST(ServerRouteTest, PutRouteRejectsEmptyBodyWithoutWritingRecord) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const httplib::Request &,
+                                  httplib::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-put-empty");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto res = client.Put("/hello", "", "application/octet-stream");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 411);
+    EXPECT_FALSE(remote_put_called);
+    EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
+
+    const auto retry = client.Put("/hello", "payload", "application/octet-stream");
+    ASSERT_TRUE(retry);
+    EXPECT_EQ(retry->status, 201);
+    EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::NO);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, PutRouteRejectsOverwriteOfLiveRecord) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const httplib::Request &,
+                                  httplib::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-put-overwrite");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto rec = minikv::record::Record{
+        .rvolumes = {volume.volume()},
+        .deleted = minikv::record::Deleted::NO,
+        .hash = "321c3cf486ed509164edec1e1981fec8",
+    };
+    ASSERT_TRUE(app.putRecord("/hello", rec));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto res = client.Put("/hello", "payload", "application/octet-stream");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 403);
+    EXPECT_FALSE(remote_put_called);
+
+    const auto loaded = app.getRecord("/hello");
+    EXPECT_EQ(loaded.rvolumes, rec.rvolumes);
+    EXPECT_EQ(loaded.deleted, rec.deleted);
+    EXPECT_EQ(loaded.hash, rec.hash);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
+  auto remote_put_called = false;
+  auto remote_delete_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const httplib::Request &,
+                                  httplib::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.server.Delete(R"(/.*)", [&](const httplib::Request &,
+                                     httplib::Response &res) {
+    remote_delete_called = true;
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("route-mutating-conflict");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/delete-me",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+
+    ASSERT_TRUE(app.lockKey("/hello"));
+    const auto put_conflict =
+        client.Put("/hello", "payload", "application/octet-stream");
+    app.unlockKey("/hello");
+
+    ASSERT_TRUE(put_conflict);
+    EXPECT_EQ(put_conflict->status, 409);
+    EXPECT_FALSE(remote_put_called);
+    EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
+
+    ASSERT_TRUE(app.lockKey("/delete-me"));
+    const auto delete_conflict = client.Delete("/delete-me");
+    app.unlockKey("/delete-me");
+
+    ASSERT_TRUE(delete_conflict);
+    EXPECT_EQ(delete_conflict->status, 409);
+    EXPECT_FALSE(remote_delete_called);
+    EXPECT_EQ(app.getRecord("/delete-me").deleted, minikv::record::Deleted::NO);
+  }
+
+  cleanup();
+}
+
 TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
   LocalVolumeServer volume;
   volume.server.Get(R"(/.*)", [](const httplib::Request &,
@@ -577,6 +727,166 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
               "321c3cf486ed509164edec1e1981fec8");
     EXPECT_EQ(head_res->get_header_value("Key-Volumes"), volume.volume());
     EXPECT_EQ(head_res->get_header_value("Key-Balance"), "balanced");
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, QueryListReturnsLiveKeysAsJson) {
+  const auto options = appOptions("route-query-list");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/runs/1",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/runs/2",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/runs/deleted",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::SOFT,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/other/1",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto res = client.Get("/runs?list");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    EXPECT_NE(res->get_header_value("Content-Type").find("application/json"),
+              std::string::npos);
+
+    const auto body = nlohmann::json::parse(res->body);
+    EXPECT_EQ(body.at("next"), "");
+    EXPECT_EQ(body.at("keys"),
+              (nlohmann::json::array({"/runs/1", "/runs/2"})));
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, QueryUnlinkedReturnsSoftDeletedKeysAsJson) {
+  const auto options = appOptions("route-query-unlinked");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/live",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/soft",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::SOFT,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto res = client.Get("/?unlinked");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+
+    const auto body = nlohmann::json::parse(res->body);
+    EXPECT_EQ(body.at("next"), "");
+    EXPECT_EQ(body.at("keys"), nlohmann::json::array({"/soft"}));
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, QueryListSupportsLimitAndStart) {
+  const auto options = appOptions("route-query-limit-start");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    for (const auto *key : {"/runs/1", "/runs/2", "/runs/3"}) {
+      ASSERT_TRUE(app.putRecord(
+          key,
+          minikv::record::Record{
+              .rvolumes = {"volume-a"},
+              .deleted = minikv::record::Deleted::NO,
+              .hash = "",
+          }));
+    }
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto first = client.Get("/runs?list&limit=2");
+
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->status, 200);
+    const auto first_body = nlohmann::json::parse(first->body);
+    EXPECT_EQ(first_body.at("next"), "/runs/3");
+    EXPECT_EQ(first_body.at("keys"),
+              (nlohmann::json::array({"/runs/1", "/runs/2"})));
+
+    const auto second = client.Get("/runs?list&start=/runs/3");
+    ASSERT_TRUE(second);
+    EXPECT_EQ(second->status, 200);
+    const auto second_body = nlohmann::json::parse(second->body);
+    EXPECT_EQ(second_body.at("next"), "");
+    EXPECT_EQ(second_body.at("keys"), nlohmann::json::array({"/runs/3"}));
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, QueryRejectsInvalidLimitAndUnknownOperation) {
+  const auto options = appOptions("route-query-invalid");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    httplib::Client client("http://" + master.volume());
+    const auto invalid_limit = client.Get("/?list&limit=bogus");
+    const auto unknown = client.Get("/?unknown");
+
+    ASSERT_TRUE(invalid_limit);
+    EXPECT_EQ(invalid_limit->status, 400);
+
+    ASSERT_TRUE(unknown);
+    EXPECT_EQ(unknown->status, 403);
   }
 
   cleanup();
