@@ -10,6 +10,8 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 add_executable(mkv_tests
+  hash_test.cpp
+  http_dependency_test.cpp
   record_test.cpp
   placement_test.cpp
   index_test.cpp

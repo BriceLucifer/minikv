@@ -17,6 +17,7 @@ option(MINIKV_BUILD_TESTS "Build minikv tests" ON)
 set(LEVELDB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LEVELDB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(LEVELDB_INSTALL OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   leveldb
@@ -24,9 +25,28 @@ FetchContent_Declare(
   GIT_TAG main
 )
 
+FetchContent_Declare(
+  boringssl
+  GIT_REPOSITORY https://github.com/google/boringssl.git
+  GIT_TAG main
+)
+
+FetchContent_Declare(
+  cpp_httplib
+  GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+  GIT_TAG v0.48.0
+)
+
 FetchContent_MakeAvailable(leveldb)
+FetchContent_MakeAvailable(boringssl)
+FetchContent_MakeAvailable(cpp_httplib)
+
+if(MINIKV_BUILD_TESTS)
+  set(BUILD_TESTING ON CACHE BOOL "" FORCE)
+endif()
 
 add_library(mkv_core STATIC
+  src/hash.cpp
   src/record.cpp
   src/placement.cpp
   src/index.cpp
@@ -42,7 +62,10 @@ target_include_directories(mkv_core
 target_compile_features(mkv_core PUBLIC cxx_std_20)
 
 target_link_libraries(mkv_core
+  PUBLIC
+    httplib::httplib
   PRIVATE
+    crypto
     leveldb
 )
 
