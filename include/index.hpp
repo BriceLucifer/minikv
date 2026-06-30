@@ -10,7 +10,7 @@ namespace leveldb {
 class DB;
 }
 
-namespace index {
+namespace minikv::index {
 
 class LevelDbIndex {
  public:
@@ -30,4 +30,4 @@ class LevelDbIndex {
   std::unique_ptr<leveldb::DB> db_;
 };
 
-} // namespace index
+} // namespace minikv::index

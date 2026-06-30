@@ -8,18 +8,19 @@
 #include <string>
 #include <vector>
 
-std::string placement::key2path(std::string_view key) {
-  auto mkey = minikv::md5(key);
-  auto b64key = minikv::base64_encode(key);
+namespace minikv::placement {
+
+std::string key2path(std::string_view key) {
+  auto mkey = md5(key);
+  auto b64key = base64_encode(key);
 
   return std::format("/{:02x}/{:02x}/{}", static_cast<int>(mkey[0]),
                      static_cast<int>(mkey[1]), b64key);
 }
 
-std::vector<std::string>
-placement::key2volume(std::string_view key,
-                      const std::vector<std::string> &volumes, int count,
-                      int svcount) {
+std::vector<std::string> key2volume(std::string_view key,
+                                    const std::vector<std::string> &volumes,
+                                    int count, int svcount) {
   auto sortvols = byScore{};
   sortvols.reserve(volumes.size());
 
@@ -30,7 +31,7 @@ placement::key2volume(std::string_view key,
     score_input.append(volume);
 
     sortvols.push_back(Sortvol{
-        .score = minikv::md5(score_input),
+        .score = md5(score_input),
         .volume = volume,
     });
   }
@@ -63,7 +64,9 @@ placement::key2volume(std::string_view key,
   return ret;
 }
 
-bool placement::needs_rebalance(const std::vector<std::string> &volumes,
-                                const std::vector<std::string> &kvolumes) {
+bool needs_rebalance(const std::vector<std::string> &volumes,
+                     const std::vector<std::string> &kvolumes) {
   return volumes != kvolumes;
 }
+
+} // namespace minikv::placement

@@ -4,7 +4,7 @@
 #include <string_view>
 #include <vector>
 
-namespace record {
+namespace minikv::record {
 
 enum class Deleted {
   NO,
@@ -21,4 +21,4 @@ struct Record {
 Record toRecord(std::string_view data);
 std::string fromRecord(const Record &rec);
 
-} // namespace record
+} // namespace minikv::record

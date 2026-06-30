@@ -40,12 +40,14 @@ std::string join(const std::vector<std::string> &spliters,
 
 } // namespace
 
-record::Record record::toRecord(std::string_view data) {
+namespace minikv::record {
+
+Record toRecord(std::string_view data) {
   auto rec = Record{};
   rec.deleted = Deleted::NO;
 
   if (data.starts_with("DELETED")) {
-    rec.deleted = record::Deleted::SOFT;
+    rec.deleted = Deleted::SOFT;
     data.remove_prefix(7);
   }
 
@@ -61,7 +63,7 @@ record::Record record::toRecord(std::string_view data) {
   return rec;
 }
 
-std::string record::fromRecord(const Record &rec) {
+std::string fromRecord(const Record &rec) {
   auto cc = std::string{};
 
   if (rec.deleted == Deleted::HARD) {
@@ -80,3 +82,5 @@ std::string record::fromRecord(const Record &rec) {
 
   return cc;
 }
+
+} // namespace minikv::record
