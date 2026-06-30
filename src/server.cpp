@@ -8,8 +8,11 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <charconv>
 #include <exception>
+#include <numeric>
+#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -206,7 +209,8 @@ ReadResult App::readFromReplica(std::string_view key) {
                                                          : "balanced";
 
   const auto keypath = placement::key2path(key);
-  for (const auto &volume : rec.rvolumes) {
+  for (const auto index : replicaProbeOrder(rec.rvolumes.size())) {
+    const auto &volume = rec.rvolumes[index];
     if (volume.empty()) {
       continue;
     }
@@ -319,6 +323,22 @@ QueryResult App::query(std::string_view key, std::string_view operation,
 }
 
 const AppOptions &App::options() const { return options_; }
+
+std::vector<std::size_t> replicaProbeOrder(std::size_t count) {
+  thread_local auto rng = [] {
+    auto seed = std::random_device{}();
+    return std::mt19937{seed};
+  }();
+  return replicaProbeOrder(count, rng);
+}
+
+std::vector<std::size_t> replicaProbeOrder(std::size_t count,
+                                           std::mt19937 &rng) {
+  auto order = std::vector<std::size_t>(count);
+  std::iota(order.begin(), order.end(), std::size_t{0});
+  std::shuffle(order.begin(), order.end(), rng);
+  return order;
+}
 
 void registerRoutes(httplib::Server &server, App &app) {
   server.set_pre_routing_handler(

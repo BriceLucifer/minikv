@@ -4,8 +4,10 @@
 #include "record.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <mutex>
+#include <random>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -80,5 +82,8 @@ class App {
 };
 
 void registerRoutes(httplib::Server &server, App &app);
+std::vector<std::size_t> replicaProbeOrder(std::size_t count);
+std::vector<std::size_t> replicaProbeOrder(std::size_t count,
+                                           std::mt19937 &rng);
 
 } // namespace minikv::server

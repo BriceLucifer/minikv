@@ -9,7 +9,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - Recently completed work includes:
   - Go-style CLI parsing and `mkv server` executable entry point.
   - GET/HEAD behavior closer to Go: fallback redirects, `Content-Md5`,
-    `Key-Volumes`, `Key-Balance`, and replica `HEAD` probing.
+    `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing.
   - PUT route parity for empty bodies, overwrite rejection, and mutating-route
     key locking.
   - Query/list JSON responses for `?list` and `?unlinked`.
@@ -23,7 +23,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug --output-on-failure` with `65/65 tests passed`
+  - `ctest --preset debug --output-on-failure` with `67/67 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -43,7 +43,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - Volume client tests using an in-process localhost HTTP server.
 - Basic server app flows for write, read redirect, delete, and unlink.
 - Thin `registerRoutes` HTTP wiring for `PUT`, `GET`, `HEAD`, and `DELETE`.
-- GET/HEAD fallback redirects, metadata headers, and replica `HEAD` probing.
+- GET/HEAD fallback redirects, metadata headers, and randomized replica `HEAD`
+  probing.
 - PUT route empty-body rejection, overwrite rejection, and route-level key
   conflict handling.
 - LevelDB prefix scanning plus JSON query responses for `?list`, `?unlinked`,
@@ -58,20 +59,13 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 ## Next
 
-1. Improve GET/HEAD parity with the Go server.
-   - Files: `include/server.hpp`, `src/server.cpp`, `tests/server_test.cpp`.
-   - Match the random replica probing order from Go.
-   - Decide whether to keep C++ route status `302` exactly or preserve any compatibility aliases.
-
-2. Revisit non-standard methods and advanced compatibility.
+1. Revisit non-standard methods and advanced compatibility.
    - `UNLINK` is implemented in the business layer but not exposed through `cpp-httplib` routes because unknown HTTP methods are rejected before routing.
    - Add HTTP `REBALANCE` method support after command-line rebalance is stable.
    - Delay S3 multipart until rebuild/rebalance are stable.
 
 ## Remaining Capability Gaps
 
-- Read distribution: GET/HEAD replica probing works, but still probes in stored
-  order instead of the Go server's randomized order.
 - Compatibility methods: business logic supports virtual unlink, but HTTP
   `UNLINK` is not exposed through the router; HTTP `REBALANCE` is also not
   implemented yet.

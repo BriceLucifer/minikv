@@ -8,8 +8,11 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <numeric>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -72,6 +75,29 @@ private:
 };
 
 } // namespace
+
+TEST(ServerProbeOrderTest, ReturnsCompletePermutation) {
+  auto rng = std::mt19937{7};
+  auto order = minikv::server::replicaProbeOrder(5, rng);
+
+  ASSERT_EQ(order.size(), 5U);
+  std::ranges::sort(order);
+  EXPECT_EQ(order, (std::vector<std::size_t>{0, 1, 2, 3, 4}));
+}
+
+TEST(ServerProbeOrderTest, ShufflesOrderForReadDistribution) {
+  auto saw_non_identity = false;
+  for (auto seed = 1U; seed <= 20U; ++seed) {
+    auto rng = std::mt19937{seed};
+    const auto order = minikv::server::replicaProbeOrder(4, rng);
+    if (order != (std::vector<std::size_t>{0, 1, 2, 3})) {
+      saw_non_identity = true;
+      break;
+    }
+  }
+
+  EXPECT_TRUE(saw_non_identity);
+}
 
 TEST(ServerAppTest, StoresOptions) {
   const auto options = appOptions("stores-options");
