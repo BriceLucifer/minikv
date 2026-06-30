@@ -1,4 +1,7 @@
+#pragma once
+
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace record {
@@ -14,5 +17,8 @@ struct Record {
   Deleted deleted;
   std::string hash;
 };
+
+Record toRecord(std::string_view data);
+std::string fromRecord(const Record &rec);
 
 } // namespace record
