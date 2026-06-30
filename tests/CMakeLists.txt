@@ -10,6 +10,7 @@ set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
 add_executable(mkv_tests
+  base64_test.cpp
   hash_test.cpp
   http_dependency_test.cpp
   record_test.cpp
@@ -24,7 +25,7 @@ target_link_libraries(mkv_tests
     GTest::gtest_main
 )
 
-target_compile_features(mkv_tests PRIVATE cxx_std_20)
+target_compile_features(mkv_tests PRIVATE cxx_std_23)
 
 include(GoogleTest)
 gtest_discover_tests(mkv_tests)

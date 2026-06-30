@@ -7,7 +7,7 @@ project(minikv
 
 include(FetchContent)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -46,6 +46,7 @@ if(MINIKV_BUILD_TESTS)
 endif()
 
 add_library(mkv_core STATIC
+  src/base64.cpp
   src/hash.cpp
   src/record.cpp
   src/placement.cpp
@@ -59,7 +60,7 @@ target_include_directories(mkv_core
     ${PROJECT_SOURCE_DIR}/include
 )
 
-target_compile_features(mkv_core PUBLIC cxx_std_20)
+target_compile_features(mkv_core PUBLIC cxx_std_23)
 
 target_link_libraries(mkv_core
   PUBLIC

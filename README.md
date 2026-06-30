@@ -1,6 +1,37 @@
 # minikv
 
-C++20 rewrite scaffold for `geohot/minikeyvalue`.
+C++23 rewrite scaffold for `geohot/minikeyvalue`.
+
+`minikeyvalue` is a small distributed object/blob store. The master keeps key
+metadata in LevelDB, while volume servers store the actual bytes on disk behind
+plain HTTP. Clients use simple `PUT`, `GET`, and `DELETE` requests; the master
+chooses replica volumes, records the placement, and redirects reads to a volume.
+
+For agent systems, this can act as artifact storage: store large inputs,
+outputs, tool logs, browser screenshots, traces, generated files, and cached
+blobs by key. Keep structured metadata in SQLite/Postgres and embeddings in a
+vector database; use minikv for the raw artifact bytes.
+
+Example agent artifact keys:
+
+```text
+/runs/abc/input.json
+/runs/abc/output.json
+/runs/abc/tool_calls.jsonl
+/runs/abc/screenshots/0001.png
+/runs/abc/artifacts/result.zip
+```
+
+Example API usage:
+
+```bash
+curl -X PUT --data-binary @trace.jsonl \
+  http://localhost:3000/runs/abc/trace.jsonl
+
+curl -L http://localhost:3000/runs/abc/trace.jsonl
+
+curl -X DELETE http://localhost:3000/runs/abc/trace.jsonl
+```
 
 The project uses CMake presets and fetches third-party dependencies during
 configure. You do not need to install GoogleTest, LevelDB, BoringSSL, or
@@ -11,7 +42,7 @@ cpp-httplib with `apt`.
 Required locally:
 
 - CMake 3.20+
-- A C++20 compiler
+- A C++23 compiler
 - Git
 
 Fetched by CMake:
