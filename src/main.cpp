@@ -1,4 +1,5 @@
 #include "cli.hpp"
+#include "rebalance.hpp"
 #include "rebuild.hpp"
 #include "server.hpp"
 
@@ -31,9 +32,16 @@ int main(int argc, char **argv) {
     });
   }
 
+  if (parsed.options.command == "rebalance") {
+    return minikv::rebalance::run(minikv::rebalance::Options{
+        .db_path = parsed.options.app.db_path,
+        .volumes = parsed.options.app.volumes,
+        .replicas = parsed.options.app.replicas,
+        .subvolumes = parsed.options.app.subvolumes,
+    });
+  }
+
   if (parsed.options.command != "server") {
-    // Accepted by the parser for command-line parity, but implementation is
-    // intentionally deferred until rebalance logic is ported.
     std::cerr << parsed.options.command << " is not implemented yet\n";
     return 1;
   }

@@ -64,6 +64,7 @@ add_library(mkv_core STATIC
   src/record.cpp
   src/placement.cpp
   src/index.cpp
+  src/rebalance.cpp
   src/rebuild.cpp
   src/server.cpp
   src/volume_client.cpp

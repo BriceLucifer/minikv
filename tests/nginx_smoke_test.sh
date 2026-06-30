@@ -49,7 +49,8 @@ require_command curl
 require_command python3
 
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/minikv-nginx-smoke.XXXXXX")
-VOLUME_ROOT="$ROOT/volume"
+VOLUME1_ROOT="$ROOT/volume1"
+VOLUME2_ROOT="$ROOT/volume2"
 NGINX_PREFIX="$ROOT/nginx-prefix"
 DB_PATH="$ROOT/indexdb"
 CONF="$ROOT/nginx.conf"
@@ -59,10 +60,11 @@ PUT_BODY="$ROOT/put-body"
 GET_BODY="$ROOT/get-body"
 HEADERS="$ROOT/headers"
 
-mkdir -p "$VOLUME_ROOT" "$NGINX_PREFIX"
+mkdir -p "$VOLUME1_ROOT" "$VOLUME2_ROOT" "$NGINX_PREFIX"
 
-VOLUME_PORT=$(free_port)
-MASTER_PORT=$(free_port "$VOLUME_PORT")
+VOLUME1_PORT=$(free_port)
+VOLUME2_PORT=$(free_port "$VOLUME1_PORT")
+MASTER_PORT=$(free_port "$VOLUME1_PORT" "$VOLUME2_PORT")
 
 cleanup() {
   if [[ -n "${MASTER_PID:-}" ]]; then
@@ -93,11 +95,26 @@ http {
   sendfile on;
 
   server {
-    listen 127.0.0.1:$VOLUME_PORT;
+    listen 127.0.0.1:$VOLUME1_PORT;
 
     location / {
-      root $VOLUME_ROOT;
-      client_body_temp_path $ROOT/body_temp;
+      root $VOLUME1_ROOT;
+      client_body_temp_path $ROOT/body_temp1;
+      client_max_body_size 0;
+      dav_methods PUT DELETE;
+      dav_access group:rw all:r;
+      create_full_put_path on;
+      autoindex on;
+      autoindex_format json;
+    }
+  }
+
+  server {
+    listen 127.0.0.1:$VOLUME2_PORT;
+
+    location / {
+      root $VOLUME2_ROOT;
+      client_body_temp_path $ROOT/body_temp2;
       client_max_body_size 0;
       dav_methods PUT DELETE;
       dav_access group:rw all:r;
@@ -111,10 +128,11 @@ EOF
 
 nginx -c "$CONF" -p "$NGINX_PREFIX" &
 NGINX_PID=$!
-wait_http_status "http://127.0.0.1:$VOLUME_PORT/" "200"
+wait_http_status "http://127.0.0.1:$VOLUME1_PORT/" "200"
+wait_http_status "http://127.0.0.1:$VOLUME2_PORT/" "200"
 
 "$MKV_BIN" \
-  -volumes "127.0.0.1:$VOLUME_PORT" \
+  -volumes "127.0.0.1:$VOLUME1_PORT" \
   -db "$DB_PATH" \
   -replicas 1 \
   -subvolumes 1 \
@@ -145,6 +163,7 @@ if ! grep -qi '^Location: http://127\.0\.0\.1:' "$HEADERS"; then
   cat "$HEADERS" >&2
   exit 1
 fi
+ORIGINAL_LOCATION=$(awk 'BEGIN{IGNORECASE=1} /^Location:/ {gsub("\r", "", $2); print $2; exit}' "$HEADERS")
 
 curl -sS -L -o "$GET_BODY" "http://127.0.0.1:$MASTER_PORT/hello"
 if ! cmp -s "$PUT_BODY" "$GET_BODY"; then
@@ -165,14 +184,14 @@ MASTER_PID=""
 rm -rf "$DB_PATH"
 
 "$MKV_BIN" \
-  -volumes "127.0.0.1:$VOLUME_PORT" \
+  -volumes "127.0.0.1:$VOLUME1_PORT" \
   -db "$DB_PATH" \
   -replicas 1 \
   -subvolumes 1 \
   rebuild >>"$MASTER_LOG" 2>&1
 
 "$MKV_BIN" \
-  -volumes "127.0.0.1:$VOLUME_PORT" \
+  -volumes "127.0.0.1:$VOLUME1_PORT" \
   -db "$DB_PATH" \
   -replicas 1 \
   -subvolumes 1 \
@@ -184,6 +203,45 @@ wait_http_status "http://127.0.0.1:$MASTER_PORT/__missing__" "404"
 curl -sS -L -o "$GET_BODY" "http://127.0.0.1:$MASTER_PORT/hello"
 if ! cmp -s "$PUT_BODY" "$GET_BODY"; then
   echo "GET -L body after rebuild did not match PUT body" >&2
+  exit 1
+fi
+
+kill "$MASTER_PID" >/dev/null 2>&1 || true
+wait "$MASTER_PID" >/dev/null 2>&1 || true
+MASTER_PID=""
+
+"$MKV_BIN" \
+  -volumes "127.0.0.1:$VOLUME2_PORT" \
+  -db "$DB_PATH" \
+  -replicas 1 \
+  -subvolumes 1 \
+  rebalance >>"$MASTER_LOG" 2>&1
+
+old_volume_status=$(curl -sS -o /dev/null -w "%{http_code}" "$ORIGINAL_LOCATION")
+if [[ "$old_volume_status" != "404" ]]; then
+  echo "old volume returned $old_volume_status after rebalance" >&2
+  exit 1
+fi
+
+"$MKV_BIN" \
+  -volumes "127.0.0.1:$VOLUME2_PORT" \
+  -db "$DB_PATH" \
+  -replicas 1 \
+  -subvolumes 1 \
+  -port "$MASTER_PORT" \
+  server >>"$MASTER_LOG" 2>&1 &
+MASTER_PID=$!
+wait_http_status "http://127.0.0.1:$MASTER_PORT/__missing__" "404"
+
+curl -sS -D "$HEADERS" -o "$GET_BODY" -L \
+  "http://127.0.0.1:$MASTER_PORT/hello"
+if ! cmp -s "$PUT_BODY" "$GET_BODY"; then
+  echo "GET -L body after rebalance did not match PUT body" >&2
+  exit 1
+fi
+if ! grep -qi "Location: http://127\\.0\\.0\\.1:$VOLUME2_PORT" "$HEADERS"; then
+  echo "GET after rebalance did not redirect to the new volume" >&2
+  cat "$HEADERS" >&2
   exit 1
 fi
 
