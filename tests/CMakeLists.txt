@@ -17,6 +17,7 @@ add_executable(mkv_tests
   placement_test.cpp
   index_test.cpp
   server_test.cpp
+  volume_client_test.cpp
 )
 
 target_link_libraries(mkv_tests

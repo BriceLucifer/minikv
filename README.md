@@ -51,6 +51,7 @@ Fetched by CMake:
 - LevelDB
 - BoringSSL
 - cpp-httplib
+- nlohmann/json
 
 ## Build And Test
 
@@ -133,11 +134,16 @@ tests/
   record_test.cpp
   index_test.cpp
   server_test.cpp
+  volume_client_test.cpp
 ```
 
 ## Notes
 
 - `hash.hpp/cpp` wraps MD5 through BoringSSL's OpenSSL-compatible EVP API.
-- `cpp-httplib` is available for future HTTP client/server work.
-- LevelDB is linked into `mkv_core` for the future index wrapper.
+- `index.hpp/cpp` wraps LevelDB for record metadata.
+- `server.hpp/cpp` currently holds the app state and key lock table.
+- `volume_client.hpp/cpp` maps the Go remote access helpers onto cpp-httplib.
+- `nlohmann/json` is available for upcoming HTTP query/response handling.
 - Tests are registered through GoogleTest and CTest.
+- Volume client tests start an in-process localhost HTTP server, so they need
+  permission to bind a loopback port.

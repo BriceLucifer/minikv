@@ -11,39 +11,26 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - Base64 encoding helper.
 - Record encode/decode logic and tests.
 - Placement logic for `key2path`, `key2volume`, and `needs_rebalance`.
-- cpp-httplib dependency for future HTTP work.
+- LevelDB-backed `LevelDbIndex` with put/get/delete tests.
+- App state and key lock table scaffold.
+- cpp-httplib dependency and remote volume client implementation.
+- nlohmann/json dependency for upcoming HTTP JSON handling.
+- Volume client tests using an in-process localhost HTTP server.
 
 ## Next
 
-1. Implement `LevelDbIndex`.
-   - Files: `include/index.hpp`, `src/index.cpp`, `tests/index_test.cpp`
-   - Wrap `leveldb::DB` with RAII.
-   - Implement `getRecord`, `putRecord`, and `deleteRecord`.
-   - Return `Record{{}, Deleted::HARD, ""}` when a key is missing, matching the Go implementation.
-   - Add tests for put/get, missing key, delete, and persistence after reopen.
-
-2. Add `AppConfig`.
-   - Files: likely `include/server.hpp` or a new `include/app.hpp`.
-   - Store volumes, fallback, replicas, subvolumes, protect, md5sum, and volume timeout.
-   - Keep it as a simple struct first.
-
-3. Add key lock table.
-   - Match Go's `LockKey` and `UnlockKey`.
-   - Use `std::mutex` plus `std::unordered_set<std::string>`.
-   - Test duplicate lock conflict and unlock behavior.
-
-4. Define `VolumeClient`.
-   - Files: `include/volume_client.hpp`, `src/volume_client.cpp`.
-   - Interface should cover remote `PUT`, `GET`, `HEAD`, and `DELETE`.
-   - Production implementation can use cpp-httplib.
-   - Tests should use a fake client first.
-
-5. Implement basic server behavior.
+1. Implement basic server HTTP behavior.
    - Files: `include/server.hpp`, `src/server.cpp`, `tests/server_test.cpp`.
    - Start with `PUT`, `GET`, and `DELETE`.
+   - Match Go's `WriteToReplicas`, `Get`, and `Delete` flow.
+   - Use `volume_client` for remote volume operations.
    - Delay S3 multipart, rebuild, rebalance, list, and unlinked support until the core flow is stable.
 
-6. Add end-to-end smoke test later.
+2. Add query/JSON responses.
+   - Match the useful parts of Go's `QueryHandler`.
+   - Use nlohmann/json for response construction.
+
+3. Add end-to-end smoke test later.
    - Start volume servers.
    - Start C++ master.
    - Use curl or pytest to verify PUT, GET, and DELETE.
