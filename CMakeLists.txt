@@ -43,9 +43,16 @@ FetchContent_Declare(
   GIT_TAG v0.48.0
 )
 
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG v3.11.3
+)
+
 FetchContent_MakeAvailable(leveldb)
 FetchContent_MakeAvailable(boringssl)
 FetchContent_MakeAvailable(cpp_httplib)
+FetchContent_MakeAvailable(nlohmann_json)
 
 if(MINIKV_BUILD_TESTS)
   set(BUILD_TESTING ON CACHE BOOL "" FORCE)
@@ -71,6 +78,7 @@ target_compile_features(mkv_core PUBLIC cxx_std_23)
 target_link_libraries(mkv_core
   PUBLIC
     httplib::httplib
+    nlohmann_json::nlohmann_json
   PRIVATE
     crypto
     leveldb
