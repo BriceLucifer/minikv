@@ -4,7 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <filesystem>
 #include <functional>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -114,6 +116,41 @@ TEST(VolumeClientTest, RemotePutAcceptsNoContent) {
     local.start();
 
     EXPECT_NO_THROW(minikv::volume_client::remotePut(local.url("/object"), "payload"));
+}
+
+TEST(VolumeClientTest, RemotePutFilesStreamsFilesAsOneRequestBody) {
+    std::string received_body;
+
+    LocalHttpServer local;
+    local.setHandler([&](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{.status = 201};
+        EXPECT_EQ(req.method, "PUT");
+        EXPECT_EQ(req.path, "/multipart");
+        received_body = req.body;
+        return res;
+    });
+    local.start();
+
+    const auto root = std::filesystem::temp_directory_path() /
+                      "minikv-remote-put-files-test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto first = root / "first";
+    const auto second = root / "second";
+    {
+        auto out = std::ofstream{first, std::ios::binary};
+        out << "hello ";
+    }
+    {
+        auto out = std::ofstream{second, std::ios::binary};
+        out << "world";
+    }
+
+    EXPECT_NO_THROW(minikv::volume_client::remotePutFiles(
+        local.url("/multipart"), {first, second}, 11));
+    EXPECT_EQ(received_body, "hello world");
+
+    std::filesystem::remove_all(root);
 }
 
 // remote_delete(remote) accepts both HTTP 204 and HTTP 404, making delete

@@ -103,6 +103,9 @@ class App {
   std::filesystem::path multipartRoot() const;
   std::filesystem::path multipartPartPath(std::string_view upload_id,
                                           int part_number) const;
+  WriteResult writeFilesToReplicas(
+      std::string_view key, const std::vector<std::filesystem::path> &paths,
+      std::uint64_t content_length, std::string_view hash);
   void removeMultipartPartsLocked(std::string_view upload_id);
   void cleanupExpiredMultipartUploadsLocked(
       std::chrono::steady_clock::time_point now);

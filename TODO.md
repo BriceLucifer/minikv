@@ -61,6 +61,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     is missing.
   - Runtime multipart upload TTL cleanup removes abandoned part files and
     rejects expired upload ids; `-multipartttl` configures the window.
+  - Multipart completion streams staged part files to replicas with
+    `Content-Length` instead of concatenating the full completed object into one
+    master-side string first.
   - HTTP adapter edge coverage for HEAD responses with non-zero
     `Content-Length`, percent-decoded paths/query strings, duplicate query
     keys, malformed percent escapes, stalled response timeouts, and custom
@@ -74,10 +77,11 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - `MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 ctest --preset debug -R
     UpstreamCompatTest --output-on-failure`
   - `./build/debug/tests/mkv_tests --gtest_filter='HttpAdapterTest.AcceptsLargeRequestBodies:ServerRouteTest.GetAndHeadRoutesReturnRedirectLocation:ServerRouteTest.PutRouteDecodesAwsChunkedPayloads:ServerRouteTest.S3Multipart*:CliTest.*:ServerAppTest.StoresOptions'`
+  - `./build/debug/tests/mkv_tests --gtest_filter='HashTest.*:VolumeClientTest.*:ServerRouteTest.S3Multipart*:ServerAppTest.StoresOptions'`
   - `MINIKV_REQUIRE_S3_COMPAT_DEPS=1 ctest --preset debug -R S3CompatTest
     --output-on-failure` passed with boto3, PyArrow, and the large multipart
     parquet roundtrip.
-  - `ctest --preset debug` with `92/92 tests passed`
+  - `ctest --preset debug` with `94/94 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -144,6 +148,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   usable for retry.
 - Runtime multipart TTL cleanup removes abandoned scratch parts during normal
   request handling; the TTL is configurable with `-multipartttl`.
+- Multipart completion streams staged part files to volume replicas and
+  computes the completed MD5 from those files, avoiding a full completed-object
+  string in master memory before writes.
 - HTTP adapter tests cover nginx-style HEAD responses with non-zero
   `Content-Length`, percent decoding for path/query parameters, duplicate
   query keys, malformed percent escapes, stalled response timeouts, and custom
@@ -156,9 +163,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 1. Broaden upstream parity checks.
    - Compare the local harness against upstream `tools/s3test.py` whenever
      upstream changes.
-2. Improve production durability around multipart uploads.
-   - Stream large multipart completion to replicas instead of concatenating the
-     full completed object in memory.
+2. Add production benchmark evidence.
+   - Run a repeatable deploy benchmark against the five-volume topology for
+     PUT/GET/DELETE throughput, MiB/s, latency percentiles, and error counts.
 
 ## Remaining Capability Gaps
 

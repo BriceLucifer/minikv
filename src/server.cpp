@@ -440,6 +440,39 @@ WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
   return {201, committed};
 }
 
+WriteResult App::writeFilesToReplicas(
+    std::string_view key, const std::vector<std::filesystem::path> &paths,
+    std::uint64_t content_length, std::string_view hash) {
+  auto kvolumes = placement::key2volume(key, options_.volumes, options_.replicas,
+                                        options_.subvolumes);
+
+  auto pending = record::Record{kvolumes, record::Deleted::SOFT, ""};
+  if (!putRecord(key, pending)) {
+    return {500, pending};
+  }
+
+  auto keypath = placement::key2path(key);
+  for (const auto &volume : kvolumes) {
+    const auto remote = "http://" + volume + keypath;
+    try {
+      volume_client::remotePutFiles(remote, paths, content_length);
+    } catch (const std::exception &) {
+      return {500, pending};
+    }
+  }
+
+  auto committed = record::Record{
+      .rvolumes = kvolumes,
+      .deleted = record::Deleted::NO,
+      .hash = options_.md5sum ? toString(hash) : "",
+  };
+  if (!putRecord(key, committed)) {
+    return {500, committed};
+  }
+
+  return {201, committed};
+}
+
 ReadResult App::readFromReplica(std::string_view key) {
   const auto rec = getRecord(key);
   auto result = ReadResult{
@@ -737,19 +770,22 @@ MultipartUploadResult App::completeMultipartUpload(
     }
   }
 
-  auto body = std::string{};
+  auto part_paths = std::vector<std::filesystem::path>{};
+  auto content_length = std::uint64_t{0};
   for (const auto part_number : part_numbers) {
     const auto path = multipartPartPath(upload_id, part_number);
-    auto file = std::ifstream{path, std::ios::binary};
-    if (!file) {
+    auto ec = std::error_code{};
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec) {
       return {.status = 403, .upload_id = "", .etag = "", .body = ""};
     }
-    body.append(std::istreambuf_iterator<char>{file},
-                std::istreambuf_iterator<char>{});
+    part_paths.push_back(path);
+    content_length += size;
   }
 
-  const auto etag = quotedEtag(body);
-  const auto result = writeToReplicas(key, body);
+  const auto hash = md5_hex_files(part_paths);
+  const auto etag = "\"" + hash + "\"";
+  const auto result = writeFilesToReplicas(key, part_paths, content_length, hash);
   if (result.status != 201) {
     return {.status = result.status, .upload_id = "", .etag = "", .body = ""};
   }

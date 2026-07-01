@@ -282,6 +282,12 @@ Abandoned uploads are also expired while the process is running; configure the
 runtime window with `-multipartttl`, using plain milliseconds or `ms`, `s`,
 `m`, and `h` suffixes.
 
+Multipart completion streams staged part files to each replica with a known
+`Content-Length` and computes the completed object MD5 from the part files.
+This keeps completion aligned with upstream's `io.MultiReader` model and avoids
+building the full completed object in one master-side string before replica
+writes.
+
 ## Production Deploy
 
 The production shape should stay close to upstream:
