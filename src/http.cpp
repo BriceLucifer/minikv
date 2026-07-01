@@ -456,7 +456,7 @@ ClientResponse request(std::string_view method, std::string_view url,
   stream.expires_after(timeout);
   auto connect_future = stream.async_connect(endpoints, asio::use_future);
   waitForOperation(ioc, connect_future, timeout, [&stream] { stream.cancel(); });
-  connect_future.get();
+  [[maybe_unused]] const auto connected_endpoint = connect_future.get();
 
   auto req = bhttp::request<bhttp::string_body>{};
   req.version(11);
@@ -473,7 +473,7 @@ ClientResponse request(std::string_view method, std::string_view url,
   stream.expires_after(timeout);
   auto write_future = bhttp::async_write(stream, req, asio::use_future);
   waitForOperation(ioc, write_future, timeout, [&stream] { stream.cancel(); });
-  write_future.get();
+  [[maybe_unused]] const auto bytes_written = write_future.get();
 
   auto buffer = beast::flat_buffer{};
   auto out = ClientResponse{};
@@ -484,7 +484,7 @@ ClientResponse request(std::string_view method, std::string_view url,
     auto read_future =
         bhttp::async_read(stream, buffer, parser, asio::use_future);
     waitForOperation(ioc, read_future, timeout, [&stream] { stream.cancel(); });
-    read_future.get();
+    [[maybe_unused]] const auto bytes_read = read_future.get();
     const auto &res = parser.get();
     out.status = static_cast<int>(res.result_int());
     for (const auto &field : res.base()) {
@@ -495,7 +495,7 @@ ClientResponse request(std::string_view method, std::string_view url,
     stream.expires_after(timeout);
     auto read_future = bhttp::async_read(stream, buffer, res, asio::use_future);
     waitForOperation(ioc, read_future, timeout, [&stream] { stream.cancel(); });
-    read_future.get();
+    [[maybe_unused]] const auto bytes_read = read_future.get();
     out.status = static_cast<int>(res.result_int());
     out.body = res.body();
     for (const auto &field : res.base()) {

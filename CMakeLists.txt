@@ -35,7 +35,7 @@ FetchContent_Declare(
 
 FetchContent_Declare(
   boost
-  URL https://github.com/boostorg/boost/releases/download/boost-1.85.0/boost-1.85.0-cmake.tar.xz
+  URL https://github.com/boostorg/boost/releases/download/boost-1.90.0/boost-1.90.0-cmake.tar.xz
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 

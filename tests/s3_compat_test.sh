@@ -69,11 +69,11 @@ mkdir -p "$VOLUME_ROOT" "$NGINX_PREFIX"
 VOLUME_PORTS=()
 USED_PORTS=()
 for _ in $(seq 1 5); do
-  port=$(free_port "${USED_PORTS[@]}")
+  port=$(free_port ${USED_PORTS+"${USED_PORTS[@]}"})
   VOLUME_PORTS+=("$port")
   USED_PORTS+=("$port")
 done
-MASTER_PORT=$(free_port "${USED_PORTS[@]}")
+MASTER_PORT=$(free_port ${USED_PORTS+"${USED_PORTS[@]}"})
 
 cleanup() {
   local status=$?
