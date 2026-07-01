@@ -159,9 +159,11 @@ toBeastResponse(const Response &res, bool head_response) {
   }
   if (!head_response) {
     out.body() = res.body;
+    out.prepare_payload();
+  } else if (!out.has_content_length()) {
+    out.content_length(res.body.size());
   }
   out.keep_alive(false);
-  out.prepare_payload();
   return out;
 }
 

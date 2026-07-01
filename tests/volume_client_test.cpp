@@ -156,3 +156,64 @@ TEST(VolumeClientTest, RemoteHeadReturnsWhetherObjectExists) {
     EXPECT_TRUE(minikv::volume_client::remoteHead(local.url("/present"), 100ms));
     EXPECT_FALSE(minikv::volume_client::remoteHead(local.url("/missing"), 100ms));
 }
+
+// Real nginx HEAD responses include the object's Content-Length while sending
+// no response body. The adapter must not wait for a body that will never arrive.
+TEST(HttpAdapterTest, HeadSkipsNonZeroLengthResponseBody) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{};
+        EXPECT_EQ(req.method, "HEAD");
+        EXPECT_EQ(req.path, "/object");
+        res.setHeader("Content-Length", "12345");
+        res.setHeader("Etag", "abc");
+        return res;
+    });
+    local.start();
+
+    const auto res = minikv::http::request("HEAD", local.url("/object"));
+
+    EXPECT_EQ(res.status, 200);
+    EXPECT_TRUE(res.body.empty());
+    EXPECT_EQ(res.headerValue("Content-Length"), "12345");
+    EXPECT_EQ(res.headerValue("etag"), "abc");
+}
+
+TEST(HttpAdapterTest, PercentDecodesPathAndQueryParameters) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{};
+        EXPECT_EQ(req.method, "GET");
+        EXPECT_EQ(req.target, "/bucket/a%20b%2Fc?prefix=hello%20world&empty&plus=a+b");
+        EXPECT_EQ(req.path, "/bucket/a b/c");
+        EXPECT_EQ(req.getParamValue("prefix"), "hello world");
+        EXPECT_TRUE(req.hasParam("empty"));
+        EXPECT_EQ(req.getParamValue("empty"), "");
+        EXPECT_EQ(req.getParamValue("plus"), "a b");
+        res.setContent("ok", "text/plain");
+        return res;
+    });
+    local.start();
+
+    const auto res = minikv::http::request(
+        "GET", local.url("/bucket/a%20b%2Fc?prefix=hello%20world&empty&plus=a+b"));
+
+    EXPECT_EQ(res.status, 200);
+    EXPECT_EQ(res.body, "ok");
+}
+
+TEST(HttpAdapterTest, CustomMethodsReachServerHandler) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{};
+        EXPECT_EQ(req.method, "REBALANCE");
+        EXPECT_EQ(req.path, "/object");
+        res.status = 204;
+        return res;
+    });
+    local.start();
+
+    const auto res = minikv::http::request("REBALANCE", local.url("/object"));
+
+    EXPECT_EQ(res.status, 204);
+}

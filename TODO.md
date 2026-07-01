@@ -34,11 +34,13 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     ?partNumber=&uploadId=`, and `POST ?uploadId=`.
   - Multipart scratch cleanup on startup and retryable completion when a part
     is missing.
+  - HTTP adapter edge coverage for HEAD responses with non-zero
+    `Content-Length`, percent-decoded paths/query strings, and custom methods.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `77/77 tests passed`
+  - `ctest --preset debug` with `80/80 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -78,15 +80,17 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - Multipart startup cleanup removes stale scratch files left by previous
   processes, and failed completion due to missing parts keeps the upload id
   usable for retry.
+- HTTP adapter tests cover nginx-style HEAD responses with non-zero
+  `Content-Length`, percent decoding for path/query parameters, and custom
+  method forwarding.
 - Master executable entry point with Go-style server flags.
 - CMake presets use Ninja and 24-way parallel build jobs on this machine.
 
 ## Next
 
 1. Tighten HTTP adapter behavior against real clients.
-   - Add tests for HEAD responses with non-zero `Content-Length` and no body,
-     matching nginx behavior.
-   - Add tests for percent-encoded paths and query ordering edge cases.
+   - Add tests for duplicate query keys and malformed percent escapes.
+   - Add tests for client timeout behavior against slow or stalled servers.
 2. Broaden upstream parity checks.
    - Compare C++ behavior against upstream `tools/s3test.py`.
    - Add route-level tests for multipart overwrite and conflict locking under
