@@ -17,6 +17,7 @@ struct HeadResult {
     bool found;
     std::string content_length;
     std::string etag;
+    std::string last_modified;
 };
 
 Response remoteGet(std::string_view url);

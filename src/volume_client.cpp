@@ -82,6 +82,7 @@ HeadResult remoteHeadInfo(std::string_view url, std::chrono::milliseconds timeou
         .found = res.status == 200,
         .content_length = res.headerValue("Content-Length"),
         .etag = res.headerValue("ETag"),
+        .last_modified = res.headerValue("Last-Modified"),
     };
 }
 

@@ -74,6 +74,8 @@ class TestS3Boto(unittest.TestCase):
         self.assertIn(key, entries)
         self.assertEqual(entries[key]["Size"], len(body))
         self.assertIn("ETag", entries[key])
+        self.assertIn("LastModified", entries[key])
+        self.assertEqual(entries[key]["StorageClass"], "STANDARD")
 
         self.s3.delete_object(Bucket="boto", Key=key)
         after_delete = self.s3.list_objects_v2(Bucket="boto")

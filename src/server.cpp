@@ -151,6 +151,7 @@ std::string requestBodyForStorage(const http::Request &req) {
 struct ObjectMetadata {
   std::string size;
   std::string etag;
+  std::string last_modified;
 };
 
 ObjectMetadata objectMetadataFromReplicas(const record::Record &rec,
@@ -166,7 +167,9 @@ ObjectMetadata objectMetadataFromReplicas(const record::Record &rec,
       const auto head =
           volume_client::remoteHeadInfo("http://" + volume + keypath, timeout);
       if (head.found) {
-        return {.size = head.content_length, .etag = head.etag};
+        return {.size = head.content_length,
+                .etag = head.etag,
+                .last_modified = head.last_modified};
       }
     } catch (const std::exception &) {
     }
@@ -210,8 +213,13 @@ http::Response applyHeadMetadata(App &app, std::string_view key) {
 
   auto res = http::Response{.status = 200};
   res.setHeader("Content-Length", metadata.size);
+  res.setHeader("Accept-Ranges", "bytes");
+  res.setHeader("x-amz-storage-class", "STANDARD");
   if (!metadata.etag.empty()) {
     res.setHeader("ETag", metadata.etag);
+  }
+  if (!metadata.last_modified.empty()) {
+    res.setHeader("Last-Modified", metadata.last_modified);
   }
   if (!rec.hash.empty()) {
     res.setHeader("Content-Md5", rec.hash);
@@ -650,8 +658,8 @@ QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const 
   scan_prefix += "/";
   scan_prefix += prefix;
 
-  auto body = std::ostringstream{};
-  body << "<ListBucketResult>";
+  auto contents = std::ostringstream{};
+  auto key_count = std::size_t{0};
   const auto records = index_.listRecords(scan_prefix, "", 0);
   for (const auto &entry : records.records) {
     if (entry.record.deleted != record::Deleted::NO) {
@@ -659,18 +667,37 @@ QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const 
     }
     const auto metadata =
         objectMetadataFromReplicas(entry.record, entry.key, options_.volume_timeout);
-    body << "<Contents><Key>"
-         << xmlEscape(std::string_view{entry.key}.substr(scan_prefix.size()))
-         << "</Key>";
+    ++key_count;
+    contents << "<Contents><Key>"
+             << xmlEscape(std::string_view{entry.key}.substr(scan_prefix.size()))
+             << "</Key>";
+    if (!metadata.last_modified.empty()) {
+      contents << "<LastModified>" << xmlEscape(metadata.last_modified)
+               << "</LastModified>";
+    }
     if (!metadata.size.empty()) {
-      body << "<Size>" << xmlEscape(metadata.size) << "</Size>";
+      contents << "<Size>" << xmlEscape(metadata.size) << "</Size>";
     }
     if (!metadata.etag.empty()) {
-      body << "<ETag>" << xmlEscape(metadata.etag) << "</ETag>";
+      contents << "<ETag>" << xmlEscape(metadata.etag) << "</ETag>";
     }
-    body << "</Contents>";
+    contents << "<StorageClass>STANDARD</StorageClass></Contents>";
   }
-  body << "</ListBucketResult>";
+
+  auto bucket_name = toString(bucket);
+  if (!bucket_name.empty() && bucket_name.front() == '/') {
+    bucket_name.erase(bucket_name.begin());
+  }
+
+  auto body = std::ostringstream{};
+  body << "<ListBucketResult>"
+       << "<Name>" << xmlEscape(bucket_name) << "</Name>"
+       << "<Prefix>" << xmlEscape(prefix) << "</Prefix>"
+       << "<KeyCount>" << key_count << "</KeyCount>"
+       << "<MaxKeys>1000</MaxKeys>"
+       << "<IsTruncated>false</IsTruncated>"
+       << contents.str()
+       << "</ListBucketResult>";
 
   return {.status = 200, .content_type = "application/xml", .body = body.str()};
 }

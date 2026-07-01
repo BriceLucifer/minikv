@@ -254,13 +254,14 @@ curl -v -L -X DELETE localhost:3000/hello
 ```
 
 The C++ master also implements the upstream S3 compatibility subset for bucket
-listing, bulk delete, and multipart upload:
+listing, bulk delete, metadata reads, and multipart upload:
 
 ```bash
 curl -s 'localhost:3000/bucket?list-type=2'
 curl -X POST -H 'Content-Type: application/xml' \
   --data-binary '<Delete><Object><Key>file.txt</Key></Object></Delete>' \
   'localhost:3000/bucket?delete'
+curl -I 'localhost:3000/bucket/file.txt'
 
 UPLOAD_ID=$(curl -s -X POST 'localhost:3000/bucket/large.bin?uploads' |
   sed -n 's:.*<UploadId>\([^<]*\)</UploadId>.*:\1:p')
@@ -287,6 +288,10 @@ Multipart completion streams staged part files to each replica with a known
 This keeps completion aligned with upstream's `io.MultiReader` model and avoids
 building the full completed object in one master-side string before replica
 writes.
+
+S3-style listings include `Name`, `Prefix`, `KeyCount`, object `Size`, `ETag`,
+`LastModified`, and `StorageClass`. `HEAD` returns direct object metadata for
+S3 clients while `GET` keeps the original minikeyvalue redirect model.
 
 ## Production Deploy
 

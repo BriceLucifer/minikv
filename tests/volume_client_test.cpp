@@ -202,6 +202,7 @@ TEST(VolumeClientTest, RemoteHeadInfoReturnsObjectMetadata) {
         EXPECT_EQ(req.path, "/present");
         res.setHeader("Content-Length", "123");
         res.setHeader("ETag", "\"abc123\"");
+        res.setHeader("Last-Modified", "Wed, 01 Jul 2026 02:00:00 GMT");
         return res;
     });
     local.start();
@@ -213,6 +214,7 @@ TEST(VolumeClientTest, RemoteHeadInfoReturnsObjectMetadata) {
     EXPECT_TRUE(head.found);
     EXPECT_EQ(head.content_length, "123");
     EXPECT_EQ(head.etag, "\"abc123\"");
+    EXPECT_EQ(head.last_modified, "Wed, 01 Jul 2026 02:00:00 GMT");
 }
 
 // Real nginx HEAD responses include the object's Content-Length while sending

@@ -777,6 +777,7 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
     res.status = 200;
     res.setHeader("Content-Length", "5");
     res.setHeader("ETag", "\"hello-etag\"");
+    res.setHeader("Last-Modified", "Wed, 01 Jul 2026 02:00:00 GMT");
   });
   volume.start();
 
@@ -818,6 +819,10 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
     EXPECT_EQ(head_res->status, 200);
     EXPECT_EQ(head_res->get_header_value("Content-Length"), "5");
     EXPECT_EQ(head_res->get_header_value("ETag"), "\"hello-etag\"");
+    EXPECT_EQ(head_res->get_header_value("Last-Modified"),
+              "Wed, 01 Jul 2026 02:00:00 GMT");
+    EXPECT_EQ(head_res->get_header_value("Accept-Ranges"), "bytes");
+    EXPECT_EQ(head_res->get_header_value("x-amz-storage-class"), "STANDARD");
     EXPECT_EQ(head_res->get_header_value("Location"), "");
     EXPECT_EQ(head_res->get_header_value("Content-Md5"),
               "321c3cf486ed509164edec1e1981fec8");
@@ -999,6 +1004,7 @@ TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
       res.status = 200;
       res.setHeader("Content-Length", "456");
       res.setHeader("ETag", "\"bravo-etag\"");
+      res.setHeader("Last-Modified", "Wed, 01 Jul 2026 02:00:00 GMT");
       return;
     }
     res.status = 404;
@@ -1055,10 +1061,19 @@ TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
     EXPECT_NE(res->get_header_value("Content-Type").find("application/xml"),
               std::string::npos);
     EXPECT_NE(res->body.find("<ListBucketResult>"), std::string::npos);
+    EXPECT_NE(res->body.find("<Name>bucket</Name>"), std::string::npos);
+    EXPECT_NE(res->body.find("<Prefix>prefix/</Prefix>"), std::string::npos);
+    EXPECT_NE(res->body.find("<KeyCount>1</KeyCount>"), std::string::npos);
+    EXPECT_NE(res->body.find("<IsTruncated>false</IsTruncated>"),
+              std::string::npos);
     EXPECT_NE(res->body.find("<Contents><Key>bravo&amp;charlie.txt</Key>"),
+              std::string::npos);
+    EXPECT_NE(res->body.find("<LastModified>Wed, 01 Jul 2026 02:00:00 GMT</LastModified>"),
               std::string::npos);
     EXPECT_NE(res->body.find("<Size>456</Size>"), std::string::npos);
     EXPECT_NE(res->body.find("<ETag>&quot;bravo-etag&quot;</ETag>"),
+              std::string::npos);
+    EXPECT_NE(res->body.find("<StorageClass>STANDARD</StorageClass>"),
               std::string::npos);
     EXPECT_EQ(res->body.find("alpha.txt"), std::string::npos);
     EXPECT_EQ(res->body.find("deleted.txt"), std::string::npos);

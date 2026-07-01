@@ -24,6 +24,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     instances, nginx/WebDAV volume config, and master environment config.
   - S3 `HEAD` returns direct object metadata for real S3 clients, and AWS SDK
     `aws-chunked` streaming payloads are decoded before replica writes.
+  - S3 listings now include bucket/list metadata and object `LastModified` /
+    `StorageClass` in addition to `Size` and `ETag`.
   - Go-style CLI parsing and `mkv server` executable entry point.
   - GET behavior closer to Go: fallback redirects, `Content-Md5`,
     `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing. HEAD now
@@ -129,7 +131,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - S3-compatible XML listing and bulk delete smoke coverage against real
   nginx/WebDAV volumes.
 - S3 list responses include per-object `Size` and `ETag` metadata from
-  volume-server `HEAD`, with unit and nginx smoke coverage.
+  volume-server `HEAD`, plus bucket `Name`, `Prefix`, `KeyCount`,
+  `LastModified`, and `StorageClass`, with unit and real boto3 coverage.
 - S3-compatible multipart upload with per-DB namespaced temporary part files
   and nginx/WebDAV smoke coverage.
 - S3 write responses include quoted MD5 `ETag` headers for normal writes,
@@ -170,8 +173,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 ## Remaining Capability Gaps
 
 - S3 compatibility:
-  - Current multipart support matches the upstream route shape but does not yet
-    expose full AWS S3 response metadata.
+  - Current multipart support matches the upstream route shape and covers the
+    real boto3/PyArrow workflows, but S3 error responses are still minimal
+    compared with AWS XML error documents.
 - Operational parity:
   - The C++ adapter now uses bounded server workers and timeout-aware async
     client operations, but it is not yet tuned like Go's `net/http` stack for
