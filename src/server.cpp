@@ -2,11 +2,11 @@
 
 #include "hash.hpp"
 #include "placement.hpp"
+#include "rebalance.hpp"
 #include "record.hpp"
 #include "volume_client.hpp"
 
-#include <httplib.h>
-#include <nlohmann/json.hpp>
+#include <boost/json.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -58,26 +58,34 @@ std::string joinVolumes(const std::vector<std::string> &volumes) {
   return joined;
 }
 
-void applyReadResult(const ReadResult &result, httplib::Response &res) {
-  // Route handlers stay thin: App methods decide status and metadata, while
-  // this adapter only translates the result into HTTP headers.
-  res.status = result.status;
-  res.set_header("Content-Length", "0");
-  if (!result.content_md5.empty()) {
-    res.set_header("Content-Md5", result.content_md5);
-  }
-  if (!result.key_volumes.empty()) {
-    res.set_header("Key-Volumes", result.key_volumes);
-  }
-  if (!result.key_balance.empty()) {
-    res.set_header("Key-Balance", result.key_balance);
-  }
-  if (!result.redirect_url.empty()) {
-    res.set_header("Location", result.redirect_url);
-  }
+http::Response makeEmptyResponse(int status) {
+  auto res = http::Response{.status = status};
+  res.setHeader("Content-Length", "0");
+  return res;
 }
 
-std::string firstQueryOperation(const httplib::Request &req) {
+http::Response applyReadResult(const ReadResult &result) {
+  // Route handlers stay thin: App methods decide status and metadata, while
+  // this adapter only translates the result into HTTP headers.
+  auto res = http::Response{};
+  res.status = result.status;
+  res.setHeader("Content-Length", "0");
+  if (!result.content_md5.empty()) {
+    res.setHeader("Content-Md5", result.content_md5);
+  }
+  if (!result.key_volumes.empty()) {
+    res.setHeader("Key-Volumes", result.key_volumes);
+  }
+  if (!result.key_balance.empty()) {
+    res.setHeader("Key-Balance", result.key_balance);
+  }
+  if (!result.redirect_url.empty()) {
+    res.setHeader("Location", result.redirect_url);
+  }
+  return res;
+}
+
+std::string firstQueryOperation(const http::Request &req) {
   const auto question = req.target.find('?');
   if (question == std::string::npos || question + 1 >= req.target.size()) {
     return "";
@@ -279,6 +287,22 @@ DeleteResult App::deleteFromReplicas(std::string_view key, bool unlink) {
   return {204, record::Record{{}, record::Deleted::HARD, ""}};
 }
 
+RebalanceResult App::rebalanceReplicas(std::string_view key) {
+  const auto rec = getRecord(key);
+  if (rec.deleted != record::Deleted::NO) {
+    return {.status = 404};
+  }
+
+  const auto target_volumes = placement::key2volume(
+      key, options_.volumes, options_.replicas, options_.subvolumes);
+  if (!rebalance::rebalanceObjectToTargets(index_, key, rec.rvolumes,
+                                           target_volumes)) {
+    return {.status = 400};
+  }
+
+  return {.status = 204};
+}
+
 QueryResult App::query(std::string_view key, std::string_view operation,
                        std::string_view start, std::string_view limit) const {
   if (operation != "list" && operation != "unlinked") {
@@ -314,10 +338,16 @@ QueryResult App::query(std::string_view key, std::string_view operation,
     keys.push_back(entry.key);
   }
 
-  const auto body = nlohmann::json{
-      {"next", next},
-      {"keys", keys},
-  }.dump();
+  auto json_keys = boost::json::array{};
+  json_keys.reserve(keys.size());
+  for (const auto &key_item : keys) {
+    json_keys.emplace_back(key_item);
+  }
+
+  auto json_body = boost::json::object{};
+  json_body["next"] = next;
+  json_body["keys"] = std::move(json_keys);
+  const auto body = boost::json::serialize(json_body);
 
   return {.status = 200, .content_type = "application/json", .body = body};
 }
@@ -340,79 +370,76 @@ std::vector<std::size_t> replicaProbeOrder(std::size_t count,
   return order;
 }
 
-void registerRoutes(httplib::Server &server, App &app) {
-  server.set_pre_routing_handler(
-      [&app](const httplib::Request &req, httplib::Response &res) {
-        // cpp-httplib has no Server::Head helper, so HEAD is handled before
-        // normal routing and shares the GET/read decision path.
-        if (req.method == "HEAD") {
-          applyReadResult(app.readFromReplica(req.path), res);
-          return httplib::Server::HandlerResponse::Handled;
-        }
+http::Response handleRequest(App &app, const http::Request &req) {
+  if (req.method == "HEAD") {
+    return applyReadResult(app.readFromReplica(req.path));
+  }
 
-        return httplib::Server::HandlerResponse::Unhandled;
-      });
-
-  server.Put(R"(/.*)", [&app](const httplib::Request &req,
-                              httplib::Response &res) {
-    auto key_lock = KeyLockGuard{app, req.path};
-    if (!key_lock.locked()) {
-      res.status = 409;
-      res.set_header("Content-Length", "0");
-      return;
-    }
-
-    if (req.body.empty()) {
-      res.status = 411;
-      res.set_header("Content-Length", "0");
-      return;
-    }
-
-    if (app.getRecord(req.path).deleted == record::Deleted::NO) {
-      res.status = 403;
-      res.set_header("Content-Length", "0");
-      return;
-    }
-
-    const auto result = app.writeToReplicas(req.path, req.body);
-    res.status = result.status;
-    res.set_header("Content-Length", "0");
-  });
-
-  server.Get(R"(/.*)", [&app](const httplib::Request &req,
-                              httplib::Response &res) {
+  if (req.method == "GET") {
     const auto operation = firstQueryOperation(req);
     if (!operation.empty()) {
       const auto result =
-          app.query(req.path, operation, req.get_param_value("start"),
-                    req.get_param_value("limit"));
+          app.query(req.path, operation, req.getParamValue("start"),
+                    req.getParamValue("limit"));
+      auto res = http::Response{.status = result.status};
       res.status = result.status;
       if (!result.content_type.empty()) {
-        res.set_header("Content-Type", result.content_type);
+        res.setHeader("Content-Type", result.content_type);
       }
       if (!result.body.empty()) {
-        res.set_content(result.body, result.content_type);
+        res.setContent(result.body, result.content_type);
       } else {
-        res.set_header("Content-Length", "0");
+        res.setHeader("Content-Length", "0");
       }
-      return;
+      return res;
     }
 
-    applyReadResult(app.readFromReplica(req.path), res);
-  });
+    return applyReadResult(app.readFromReplica(req.path));
+  }
 
-  server.Delete(R"(/.*)", [&app](const httplib::Request &req,
-                                 httplib::Response &res) {
+  if (req.method == "PUT") {
     auto key_lock = KeyLockGuard{app, req.path};
     if (!key_lock.locked()) {
-      res.status = 409;
-      res.set_header("Content-Length", "0");
-      return;
+      return makeEmptyResponse(409);
     }
 
-    const auto result = app.deleteFromReplicas(req.path);
-    res.status = result.status;
-    res.set_header("Content-Length", "0");
+    if (req.body.empty()) {
+      return makeEmptyResponse(411);
+    }
+
+    if (app.getRecord(req.path).deleted == record::Deleted::NO) {
+      return makeEmptyResponse(403);
+    }
+
+    const auto result = app.writeToReplicas(req.path, req.body);
+    return makeEmptyResponse(result.status);
+  }
+
+  if (req.method == "DELETE" || req.method == "UNLINK") {
+    auto key_lock = KeyLockGuard{app, req.path};
+    if (!key_lock.locked()) {
+      return makeEmptyResponse(409);
+    }
+
+    const auto result = app.deleteFromReplicas(req.path, req.method == "UNLINK");
+    return makeEmptyResponse(result.status);
+  }
+
+  if (req.method == "REBALANCE") {
+    auto key_lock = KeyLockGuard{app, req.path};
+    if (!key_lock.locked()) {
+      return makeEmptyResponse(409);
+    }
+
+    return makeEmptyResponse(app.rebalanceReplicas(req.path).status);
+  }
+
+  return makeEmptyResponse(400);
+}
+
+void registerRoutes(http::Server &server, App &app) {
+  server.setHandler([&app](const http::Request &req) {
+    return handleRequest(app, req);
   });
 }
 

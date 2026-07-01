@@ -25,6 +25,9 @@ staleRealVolumes(const std::vector<std::string> &real_volumes,
 bool rebalanceObject(index::LevelDbIndex &index, const Options &options,
                      std::string_view key,
                      const std::vector<std::string> &recorded_volumes);
+bool rebalanceObjectToTargets(index::LevelDbIndex &index, std::string_view key,
+                              const std::vector<std::string> &recorded_volumes,
+                              const std::vector<std::string> &target_volumes);
 int run(const Options &options);
 
 } // namespace minikv::rebalance

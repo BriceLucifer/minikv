@@ -34,8 +34,8 @@ curl -X DELETE http://localhost:3000/runs/abc/trace.jsonl
 ```
 
 The project uses CMake presets and fetches third-party dependencies during
-configure. You do not need to install GoogleTest, LevelDB, BoringSSL, or
-cpp-httplib with `apt`.
+configure. You do not need to install GoogleTest, LevelDB, BoringSSL, or Boost
+with `apt`.
 
 ## Mental Model
 
@@ -124,8 +124,9 @@ Fetched by CMake:
 - GoogleTest
 - LevelDB
 - BoringSSL
-- cpp-httplib
-- nlohmann/json
+- Boost.Asio
+- Boost.Beast
+- Boost.JSON
 
 ## Build And Test
 
@@ -223,6 +224,7 @@ cmake --preset debug
 
 ```text
 include/
+  http.hpp
   hash.hpp
   placement.hpp
   record.hpp
@@ -231,6 +233,7 @@ include/
   volume_client.hpp
 
 src/
+  http.cpp
   hash.cpp
   placement.cpp
   record.cpp
@@ -252,11 +255,14 @@ tests/
 
 - `hash.hpp/cpp` wraps MD5 through BoringSSL's OpenSSL-compatible EVP API.
 - `index.hpp/cpp` wraps LevelDB for record metadata.
+- `http.hpp/cpp` wraps Boost.Beast for master serving and outbound volume
+  requests, including custom methods such as `UNLINK` and `REBALANCE`.
 - `server.hpp/cpp` holds the app state, key lock table, core write/read/delete
   flows, and thin HTTP route registration.
-- `volume_client.hpp/cpp` maps the Go remote access helpers onto cpp-httplib.
+- `volume_client.hpp/cpp` maps the Go remote access helpers onto the local
+  Boost.Beast HTTP adapter.
 - `cli.hpp/cpp` parses the Go-style master flags used by `build/debug/mkv`.
-- `nlohmann/json` is available for upcoming HTTP query/response handling.
+- Boost.JSON handles query/list responses and nginx autoindex parsing.
 - Tests are registered through GoogleTest and CTest.
 - Server and volume client tests start in-process localhost HTTP servers, so
   they need permission to bind loopback ports.

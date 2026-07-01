@@ -1,32 +1,38 @@
+#include "http.hpp"
 #include "volume_client.hpp"
 
 #include <gtest/gtest.h>
-#include <httplib.h>
 
 #include <chrono>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 
 // Starts an in-process HTTP server for volume_client tests.
 // This keeps the tests self-contained while still exercising real HTTP
-// requests through cpp-httplib.
+// requests through the project's Beast adapter.
 class LocalHttpServer {
 public:
-    httplib::Server server;
+    minikv::http::Server server;
+
+    void setHandler(minikv::http::Handler handler) {
+        server.setHandler(std::move(handler));
+    }
 
     void start() {
-        port_ = server.bind_to_any_port("127.0.0.1");
+        port_ = server.bindToAnyPort("127.0.0.1");
         if (port_ < 0) {
             throw std::runtime_error("failed to bind test server");
         }
 
         worker_ = std::thread([this] {
-            server.listen_after_bind();
+            server.listenAfterBind();
         });
-        server.wait_until_ready();
+        server.waitUntilReady();
     }
 
     std::string url(std::string_view path) const {
@@ -50,8 +56,12 @@ private:
 // remote_get(remote) accepts only HTTP 200 and returns the response body.
 TEST(VolumeClientTest, RemoteGetReadsBodyFromUrlPath) {
     LocalHttpServer local;
-    local.server.Get("/aa/bb/key", [](const httplib::Request&, httplib::Response& res) {
-        res.set_content("stored-value", "application/octet-stream");
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{};
+        EXPECT_EQ(req.method, "GET");
+        EXPECT_EQ(req.path, "/aa/bb/key");
+        res.setContent("stored-value", "application/octet-stream");
+        return res;
     });
     local.start();
 
@@ -64,8 +74,8 @@ TEST(VolumeClientTest, RemoteGetReadsBodyFromUrlPath) {
 // remote_get(remote) treats any non-200 status as an error.
 TEST(VolumeClientTest, RemoteGetRejectsNonOkStatus) {
     LocalHttpServer local;
-    local.server.Get("/missing", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 404;
+    local.setHandler([](const minikv::http::Request&) {
+        return minikv::http::Response{.status = 404};
     });
     local.start();
 
@@ -80,9 +90,12 @@ TEST(VolumeClientTest, RemotePutSendsBodyAndAcceptsCreated) {
     std::string received_body;
 
     LocalHttpServer local;
-    local.server.Put("/object", [&](const httplib::Request& req, httplib::Response& res) {
+    local.setHandler([&](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{.status = 201};
+        EXPECT_EQ(req.method, "PUT");
+        EXPECT_EQ(req.path, "/object");
         received_body = req.body;
-        res.status = 201;
+        return res;
     });
     local.start();
 
@@ -93,8 +106,10 @@ TEST(VolumeClientTest, RemotePutSendsBodyAndAcceptsCreated) {
 // remote_put(remote, length, body) also accepts HTTP 204.
 TEST(VolumeClientTest, RemotePutAcceptsNoContent) {
     LocalHttpServer local;
-    local.server.Put("/object", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 204;
+    local.setHandler([](const minikv::http::Request& req) {
+        EXPECT_EQ(req.method, "PUT");
+        EXPECT_EQ(req.path, "/object");
+        return minikv::http::Response{.status = 204};
     });
     local.start();
 
@@ -105,11 +120,15 @@ TEST(VolumeClientTest, RemotePutAcceptsNoContent) {
 // idempotent when the remote object is already missing.
 TEST(VolumeClientTest, RemoteDeleteAcceptsNoContentAndNotFound) {
     LocalHttpServer local;
-    local.server.Delete("/present", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 204;
-    });
-    local.server.Delete("/missing", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 404;
+    local.setHandler([](const minikv::http::Request& req) {
+        EXPECT_EQ(req.method, "DELETE");
+        if (req.path == "/present") {
+            return minikv::http::Response{.status = 204};
+        }
+        if (req.path == "/missing") {
+            return minikv::http::Response{.status = 404};
+        }
+        return minikv::http::Response{.status = 500};
     });
     local.start();
 
@@ -121,11 +140,15 @@ TEST(VolumeClientTest, RemoteDeleteAcceptsNoContentAndNotFound) {
 // reachable statuses.
 TEST(VolumeClientTest, RemoteHeadReturnsWhetherObjectExists) {
     LocalHttpServer local;
-    local.server.Get("/present", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 200;
-    });
-    local.server.Get("/missing", [](const httplib::Request&, httplib::Response& res) {
-        res.status = 404;
+    local.setHandler([](const minikv::http::Request& req) {
+        EXPECT_EQ(req.method, "HEAD");
+        if (req.path == "/present") {
+            return minikv::http::Response{.status = 200};
+        }
+        if (req.path == "/missing") {
+            return minikv::http::Response{.status = 404};
+        }
+        return minikv::http::Response{.status = 500};
     });
     local.start();
 

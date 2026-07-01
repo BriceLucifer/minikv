@@ -1,5 +1,6 @@
 #pragma once
 
+#include "http.hpp"
 #include "index.hpp"
 #include "record.hpp"
 
@@ -12,10 +13,6 @@
 #include <string_view>
 #include <unordered_set>
 #include <vector>
-
-namespace httplib {
-class Server;
-} // namespace httplib
 
 namespace minikv::server {
 
@@ -55,6 +52,10 @@ struct QueryResult {
   std::string body;
 };
 
+struct RebalanceResult {
+  int status;
+};
+
 class App {
  public:
   explicit App(AppOptions options);
@@ -69,6 +70,7 @@ class App {
   WriteResult writeToReplicas(std::string_view key, std::string_view value);
   ReadResult readFromReplica(std::string_view key);
   DeleteResult deleteFromReplicas(std::string_view key, bool unlink = false);
+  RebalanceResult rebalanceReplicas(std::string_view key);
   QueryResult query(std::string_view key, std::string_view operation,
                     std::string_view start, std::string_view limit) const;
 
@@ -81,7 +83,8 @@ class App {
   std::unordered_set<std::string> locks_;
 };
 
-void registerRoutes(httplib::Server &server, App &app);
+http::Response handleRequest(App &app, const http::Request &request);
+void registerRoutes(http::Server &server, App &app);
 std::vector<std::size_t> replicaProbeOrder(std::size_t count);
 std::vector<std::size_t> replicaProbeOrder(std::size_t count,
                                            std::mt19937 &rng);

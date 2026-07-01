@@ -4,7 +4,7 @@
 #include "placement.hpp"
 #include "volume_client.hpp"
 
-#include <nlohmann/json.hpp>
+#include <boost/json.hpp>
 
 #include <algorithm>
 #include <exception>
@@ -132,15 +132,25 @@ bool rebuildObject(index::LevelDbIndex &index, const Options &options,
 }
 
 std::vector<FileEntry> parseDirectoryListing(std::string_view body) {
-  auto parsed = nlohmann::json::parse(body);
+  const auto parsed = boost::json::parse(body);
+  const auto &items = parsed.as_array();
   auto entries = std::vector<FileEntry>{};
-  entries.reserve(parsed.size());
+  entries.reserve(items.size());
 
-  for (const auto &item : parsed) {
+  for (const auto &item : items) {
+    const auto &object = item.as_object();
+    const auto stringValue = [&object](boost::json::string_view key) {
+      const auto *value = object.if_contains(key);
+      if (value == nullptr || !value->is_string()) {
+        return std::string{};
+      }
+      const auto string = value->as_string();
+      return std::string{string.data(), string.size()};
+    };
     entries.push_back(FileEntry{
-        .name = item.value("name", ""),
-        .type = item.value("type", ""),
-        .mtime = item.value("mtime", ""),
+        .name = stringValue("name"),
+        .type = stringValue("type"),
+        .mtime = stringValue("mtime"),
     });
   }
 

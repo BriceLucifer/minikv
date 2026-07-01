@@ -5,8 +5,8 @@
 #include "record.hpp"
 
 #include <gtest/gtest.h>
-#include <httplib.h>
-#include <nlohmann/json.hpp>
+#include "http_test_util.hpp"
+#include <boost/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -42,20 +42,29 @@ minikv::server::AppOptions appOptions(std::string_view name) {
   };
 }
 
+std::vector<std::string> jsonStringArray(const boost::json::value &value) {
+  auto out = std::vector<std::string>{};
+  for (const auto &item : value.as_array()) {
+    const auto string = item.as_string();
+    out.emplace_back(string.data(), string.size());
+  }
+  return out;
+}
+
 class LocalVolumeServer {
 public:
-  httplib::Server server;
+  minikv::test::TestHttpServer server;
 
   void start() {
-    port_ = server.bind_to_any_port("127.0.0.1");
+    port_ = server.bindToAnyPort("127.0.0.1");
     if (port_ < 0) {
       throw std::runtime_error("failed to bind test volume server");
     }
 
     worker_ = std::thread([this] {
-      server.listen_after_bind();
+      server.listenAfterBind();
     });
-    server.wait_until_ready();
+    server.waitUntilReady();
   }
 
   std::string volume() const {
@@ -171,8 +180,8 @@ TEST(ServerAppTest, WriteToReplicasStoresRemoteBodyAndFinalRecord) {
   std::string received_body;
 
   LocalVolumeServer volume;
-  volume.server.Put(R"(/.*)", [&](const httplib::Request &req,
-                                  httplib::Response &res) {
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
     received_path = req.path;
     received_body = req.body;
     res.status = 201;
@@ -209,8 +218,8 @@ TEST(ServerAppTest, WriteToReplicasStoresRemoteBodyAndFinalRecord) {
 
 TEST(ServerAppTest, ReadFromReplicaReturnsRedirectForLiveRecord) {
   LocalVolumeServer volume;
-  volume.server.Get(R"(/.*)", [](const httplib::Request &,
-                                 httplib::Response &res) {
+  volume.server.Get(R"(/.*)", [](const minikv::http::Request &,
+                                 minikv::http::Response &res) {
     res.status = 200;
   });
   volume.start();
@@ -379,8 +388,8 @@ TEST(ServerAppTest, DeleteFromReplicasDeletesRemoteObjectsAndHardDeletesRecord) 
   std::vector<std::string> deleted_paths;
 
   LocalVolumeServer volume;
-  volume.server.Delete(R"(/.*)", [&](const httplib::Request &req,
-                                     httplib::Response &res) {
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &req,
+                                     minikv::http::Response &res) {
     deleted_paths.push_back(req.path);
     res.status = 204;
   });
@@ -416,8 +425,8 @@ TEST(ServerAppTest, DeleteFromReplicasDeletesRemoteObjectsAndHardDeletesRecord) 
 
 TEST(ServerAppTest, DeleteFromReplicasKeepsSoftRecordWhenRemoteDeleteFails) {
   LocalVolumeServer volume;
-  volume.server.Delete(R"(/.*)", [](const httplib::Request &,
-                                    httplib::Response &res) {
+  volume.server.Delete(R"(/.*)", [](const minikv::http::Request &,
+                                    minikv::http::Response &res) {
     res.status = 500;
   });
   volume.start();
@@ -457,8 +466,8 @@ TEST(ServerAppTest, DeleteFromReplicasKeepsSoftRecordWhenRemoteDeleteFails) {
 TEST(ServerAppTest, DeleteFromReplicasUnlinkOnlySoftDeletesMetadata) {
   LocalVolumeServer volume;
   auto remote_delete_called = false;
-  volume.server.Delete(R"(/.*)", [&](const httplib::Request &,
-                                     httplib::Response &res) {
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
     remote_delete_called = true;
     res.status = 204;
   });
@@ -520,8 +529,8 @@ TEST(ServerRouteTest, PutRouteWritesToReplicas) {
   std::string received_body;
 
   LocalVolumeServer volume;
-  volume.server.Put(R"(/.*)", [&](const httplib::Request &req,
-                                  httplib::Response &res) {
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
     received_body = req.body;
     res.status = 201;
   });
@@ -540,7 +549,7 @@ TEST(ServerRouteTest, PutRouteWritesToReplicas) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto res = client.Put("/hello", "payload", "application/octet-stream");
 
     ASSERT_TRUE(res);
@@ -559,8 +568,8 @@ TEST(ServerRouteTest, PutRouteRejectsEmptyBodyWithoutWritingRecord) {
   auto remote_put_called = false;
 
   LocalVolumeServer volume;
-  volume.server.Put(R"(/.*)", [&](const httplib::Request &,
-                                  httplib::Response &res) {
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
     remote_put_called = true;
     res.status = 201;
   });
@@ -578,7 +587,7 @@ TEST(ServerRouteTest, PutRouteRejectsEmptyBodyWithoutWritingRecord) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto res = client.Put("/hello", "", "application/octet-stream");
 
     ASSERT_TRUE(res);
@@ -599,8 +608,8 @@ TEST(ServerRouteTest, PutRouteRejectsOverwriteOfLiveRecord) {
   auto remote_put_called = false;
 
   LocalVolumeServer volume;
-  volume.server.Put(R"(/.*)", [&](const httplib::Request &,
-                                  httplib::Response &res) {
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
     remote_put_called = true;
     res.status = 201;
   });
@@ -625,7 +634,7 @@ TEST(ServerRouteTest, PutRouteRejectsOverwriteOfLiveRecord) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto res = client.Put("/hello", "payload", "application/octet-stream");
 
     ASSERT_TRUE(res);
@@ -646,13 +655,13 @@ TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
   auto remote_delete_called = false;
 
   LocalVolumeServer volume;
-  volume.server.Put(R"(/.*)", [&](const httplib::Request &,
-                                  httplib::Response &res) {
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
     remote_put_called = true;
     res.status = 201;
   });
-  volume.server.Delete(R"(/.*)", [&](const httplib::Request &,
-                                     httplib::Response &res) {
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
     remote_delete_called = true;
     res.status = 204;
   });
@@ -679,7 +688,7 @@ TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
 
     ASSERT_TRUE(app.lockKey("/hello"));
     const auto put_conflict =
@@ -706,8 +715,8 @@ TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
 
 TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
   LocalVolumeServer volume;
-  volume.server.Get(R"(/.*)", [](const httplib::Request &,
-                                 httplib::Response &res) {
+  volume.server.Get(R"(/.*)", [](const minikv::http::Request &,
+                                 minikv::http::Response &res) {
     res.status = 200;
   });
   volume.start();
@@ -732,7 +741,7 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto expected_location =
         "http://" + volume.volume() + minikv::placement::key2path("/hello");
 
@@ -797,7 +806,7 @@ TEST(ServerRouteTest, QueryListReturnsLiveKeysAsJson) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto res = client.Get("/runs?list");
 
     ASSERT_TRUE(res);
@@ -805,10 +814,10 @@ TEST(ServerRouteTest, QueryListReturnsLiveKeysAsJson) {
     EXPECT_NE(res->get_header_value("Content-Type").find("application/json"),
               std::string::npos);
 
-    const auto body = nlohmann::json::parse(res->body);
-    EXPECT_EQ(body.at("next"), "");
-    EXPECT_EQ(body.at("keys"),
-              (nlohmann::json::array({"/runs/1", "/runs/2"})));
+    const auto body = boost::json::parse(res->body).as_object();
+    EXPECT_EQ(body.at("next").as_string(), "");
+    EXPECT_EQ(jsonStringArray(body.at("keys")),
+              (std::vector<std::string>{"/runs/1", "/runs/2"}));
   }
 
   cleanup();
@@ -839,15 +848,16 @@ TEST(ServerRouteTest, QueryUnlinkedReturnsSoftDeletedKeysAsJson) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto res = client.Get("/?unlinked");
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
 
-    const auto body = nlohmann::json::parse(res->body);
-    EXPECT_EQ(body.at("next"), "");
-    EXPECT_EQ(body.at("keys"), nlohmann::json::array({"/soft"}));
+    const auto body = boost::json::parse(res->body).as_object();
+    EXPECT_EQ(body.at("next").as_string(), "");
+    EXPECT_EQ(jsonStringArray(body.at("keys")),
+              (std::vector<std::string>{"/soft"}));
   }
 
   cleanup();
@@ -873,22 +883,23 @@ TEST(ServerRouteTest, QueryListSupportsLimitAndStart) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto first = client.Get("/runs?list&limit=2");
 
     ASSERT_TRUE(first);
     EXPECT_EQ(first->status, 200);
-    const auto first_body = nlohmann::json::parse(first->body);
-    EXPECT_EQ(first_body.at("next"), "/runs/3");
-    EXPECT_EQ(first_body.at("keys"),
-              (nlohmann::json::array({"/runs/1", "/runs/2"})));
+    const auto first_body = boost::json::parse(first->body).as_object();
+    EXPECT_EQ(first_body.at("next").as_string(), "/runs/3");
+    EXPECT_EQ(jsonStringArray(first_body.at("keys")),
+              (std::vector<std::string>{"/runs/1", "/runs/2"}));
 
     const auto second = client.Get("/runs?list&start=/runs/3");
     ASSERT_TRUE(second);
     EXPECT_EQ(second->status, 200);
-    const auto second_body = nlohmann::json::parse(second->body);
-    EXPECT_EQ(second_body.at("next"), "");
-    EXPECT_EQ(second_body.at("keys"), nlohmann::json::array({"/runs/3"}));
+    const auto second_body = boost::json::parse(second->body).as_object();
+    EXPECT_EQ(second_body.at("next").as_string(), "");
+    EXPECT_EQ(jsonStringArray(second_body.at("keys")),
+              (std::vector<std::string>{"/runs/3"}));
   }
 
   cleanup();
@@ -904,7 +915,7 @@ TEST(ServerRouteTest, QueryRejectsInvalidLimitAndUnknownOperation) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto invalid_limit = client.Get("/?list&limit=bogus");
     const auto unknown = client.Get("/?unknown");
 
@@ -922,8 +933,8 @@ TEST(ServerRouteTest, DeleteRouteDeletesRemoteObjects) {
   auto remote_delete_called = false;
 
   LocalVolumeServer volume;
-  volume.server.Delete(R"(/.*)", [&](const httplib::Request &,
-                                     httplib::Response &res) {
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
     remote_delete_called = true;
     res.status = 204;
   });
@@ -950,13 +961,132 @@ TEST(ServerRouteTest, DeleteRouteDeletesRemoteObjects) {
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
-    httplib::Client client("http://" + master.volume());
+    minikv::test::TestClient client("http://" + master.volume());
     const auto res = client.Delete("/hello");
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 204);
     EXPECT_TRUE(remote_delete_called);
     EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, UnlinkRouteSoftDeletesWithoutTouchingRemoteObjects) {
+  auto remote_delete_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
+    remote_delete_called = true;
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("route-unlink");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = true;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/hello",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "321c3cf486ed509164edec1e1981fec8",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto res = client.Custom("UNLINK", "/hello");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 204);
+    EXPECT_FALSE(remote_delete_called);
+
+    const auto loaded = app.getRecord("/hello");
+    EXPECT_EQ(loaded.deleted, minikv::record::Deleted::SOFT);
+    EXPECT_EQ(loaded.rvolumes, (std::vector<std::string>{volume.volume()}));
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, RebalanceRouteCopiesToTargetAndDeletesStaleReplica) {
+  std::string source_path;
+  auto source_deleted = false;
+  LocalVolumeServer source;
+  source.server.Get(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
+    source_path = req.path;
+    res.status = 200;
+    res.setContent("payload", "application/octet-stream");
+  });
+  source.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
+    source_deleted = true;
+    res.status = 204;
+  });
+  source.start();
+
+  std::string target_path;
+  std::string target_body;
+  LocalVolumeServer target;
+  target.server.Get(R"(/.*)", [](const minikv::http::Request &,
+                                 minikv::http::Response &res) {
+    res.status = 404;
+  });
+  target.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
+    target_path = req.path;
+    target_body = req.body;
+    res.status = 201;
+  });
+  target.start();
+
+  auto options = appOptions("route-rebalance");
+  options.volumes = {target.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/hello",
+        minikv::record::Record{
+            .rvolumes = {source.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "321c3cf486ed509164edec1e1981fec8",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto res = client.Custom("REBALANCE", "/hello");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 204);
+
+    const auto expected_path = minikv::placement::key2path("/hello");
+    EXPECT_EQ(source_path, expected_path);
+    EXPECT_EQ(target_path, expected_path);
+    EXPECT_EQ(target_body, "payload");
+    EXPECT_TRUE(source_deleted);
+
+    const auto loaded = app.getRecord("/hello");
+    EXPECT_EQ(loaded.deleted, minikv::record::Deleted::NO);
+    EXPECT_EQ(loaded.rvolumes, (std::vector<std::string>{target.volume()}));
   }
 
   cleanup();

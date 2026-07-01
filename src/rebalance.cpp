@@ -92,6 +92,15 @@ staleRealVolumes(const std::vector<std::string> &real_volumes,
 bool rebalanceObject(index::LevelDbIndex &index, const Options &options,
                      std::string_view key,
                      const std::vector<std::string> &recorded_volumes) {
+  const auto target_volumes =
+      placement::key2volume(key, options.volumes, options.replicas,
+                            options.subvolumes);
+  return rebalanceObjectToTargets(index, key, recorded_volumes, target_volumes);
+}
+
+bool rebalanceObjectToTargets(index::LevelDbIndex &index, std::string_view key,
+                              const std::vector<std::string> &recorded_volumes,
+                              const std::vector<std::string> &target_volumes) {
   const auto key_path = placement::key2path(key);
   auto real_volumes = std::vector<std::string>{};
   try {
@@ -105,9 +114,6 @@ bool rebalanceObject(index::LevelDbIndex &index, const Options &options,
     return false;
   }
 
-  const auto target_volumes =
-      placement::key2volume(key, options.volumes, options.replicas,
-                            options.subvolumes);
   if (!placement::needs_rebalance(real_volumes, target_volumes)) {
     return true;
   }

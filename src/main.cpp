@@ -3,8 +3,6 @@
 #include "rebuild.hpp"
 #include "server.hpp"
 
-#include <httplib.h>
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -53,7 +51,7 @@ int main(int argc, char **argv) {
   std::cout << '\n';
 
   auto app = minikv::server::App{parsed.options.app};
-  auto server = httplib::Server{};
+  auto server = minikv::http::Server{};
   minikv::server::registerRoutes(server, app);
 
   if (!server.listen("0.0.0.0", parsed.options.port)) {

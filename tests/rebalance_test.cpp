@@ -5,7 +5,7 @@
 #include "record.hpp"
 
 #include <gtest/gtest.h>
-#include <httplib.h>
+#include "http_test_util.hpp"
 
 #include <filesystem>
 #include <stdexcept>
@@ -27,16 +27,16 @@ std::filesystem::path testDbPath(std::string_view name) {
 
 class LocalVolumeServer {
 public:
-  httplib::Server server;
+  minikv::test::TestHttpServer server;
 
   void start() {
-    port_ = server.bind_to_any_port("127.0.0.1");
+    port_ = server.bindToAnyPort("127.0.0.1");
     if (port_ < 0) {
       throw std::runtime_error("failed to bind test volume server");
     }
 
-    worker_ = std::thread([this] { server.listen_after_bind(); });
-    server.wait_until_ready();
+    worker_ = std::thread([this] { server.listenAfterBind(); });
+    server.waitUntilReady();
   }
 
   std::string volume() const {
@@ -71,14 +71,14 @@ TEST(RebalanceTest, RebalanceObjectCopiesToTargetAndDeletesStaleReplica) {
   std::string source_path;
   auto source_deleted = false;
   LocalVolumeServer source;
-  source.server.Get(R"(/.*)", [&](const httplib::Request &req,
-                                  httplib::Response &res) {
+  source.server.Get(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
     source_path = req.path;
     res.status = 200;
     res.set_content("payload", "application/octet-stream");
   });
-  source.server.Delete(R"(/.*)", [&](const httplib::Request &,
-                                     httplib::Response &res) {
+  source.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
     source_deleted = true;
     res.status = 204;
   });
@@ -87,10 +87,10 @@ TEST(RebalanceTest, RebalanceObjectCopiesToTargetAndDeletesStaleReplica) {
   std::string target_path;
   std::string target_body;
   LocalVolumeServer target;
-  target.server.Get(R"(/.*)", [](const httplib::Request &,
-                                 httplib::Response &res) { res.status = 404; });
-  target.server.Put(R"(/.*)", [&](const httplib::Request &req,
-                                  httplib::Response &res) {
+  target.server.Get(R"(/.*)", [](const minikv::http::Request &,
+                                 minikv::http::Response &res) { res.status = 404; });
+  target.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
     target_path = req.path;
     target_body = req.body;
     res.status = 201;
@@ -137,8 +137,8 @@ TEST(RebalanceTest, RebalanceObjectFailsWhenNoRecordedReplicaExists) {
   const auto cleanup = [&] { std::filesystem::remove_all(path); };
 
   LocalVolumeServer missing;
-  missing.server.Get(R"(/.*)", [](const httplib::Request &,
-                                  httplib::Response &res) {
+  missing.server.Get(R"(/.*)", [](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
     res.status = 404;
   });
   missing.start();

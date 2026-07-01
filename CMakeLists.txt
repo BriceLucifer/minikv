@@ -18,12 +18,8 @@ set(LEVELDB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LEVELDB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(LEVELDB_INSTALL OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
-# Avoid pulling optional system dependencies into httplib by default.
-set(HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
-set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE BOOL "" FORCE)
+set(BOOST_INCLUDE_LIBRARIES asio beast json CACHE STRING "" FORCE)
+set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
   leveldb
@@ -38,21 +34,14 @@ FetchContent_Declare(
 )
 
 FetchContent_Declare(
-  cpp_httplib
-  GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-  GIT_TAG v0.48.0
-)
-
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG v3.11.3
+  boost
+  URL https://github.com/boostorg/boost/releases/download/boost-1.85.0/boost-1.85.0-cmake.tar.xz
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
 FetchContent_MakeAvailable(leveldb)
 FetchContent_MakeAvailable(boringssl)
-FetchContent_MakeAvailable(cpp_httplib)
-FetchContent_MakeAvailable(nlohmann_json)
+FetchContent_MakeAvailable(boost)
 
 if(MINIKV_BUILD_TESTS)
   set(BUILD_TESTING ON CACHE BOOL "" FORCE)
@@ -64,6 +53,7 @@ add_library(mkv_core STATIC
   src/record.cpp
   src/placement.cpp
   src/index.cpp
+  src/http.cpp
   src/rebalance.cpp
   src/rebuild.cpp
   src/server.cpp
@@ -80,8 +70,9 @@ target_compile_features(mkv_core PUBLIC cxx_std_23)
 
 target_link_libraries(mkv_core
   PUBLIC
-    httplib::httplib
-    nlohmann_json::nlohmann_json
+    Boost::asio
+    Boost::beast
+    Boost::json
   PRIVATE
     crypto
     leveldb

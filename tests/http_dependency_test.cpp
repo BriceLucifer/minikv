@@ -1,19 +1,23 @@
-#include <httplib.h>
-#include <nlohmann/json.hpp>
+#include "http.hpp"
+
+#include <boost/json.hpp>
 
 #include <gtest/gtest.h>
 
-TEST(HttpDependencyTest, HeaderOnlyLibraryIsAvailable) {
-  httplib::Headers headers{{"Content-Type", "text/plain"}};
+TEST(HttpDependencyTest, AdapterResponseHeadersAreAvailable) {
+  auto response = minikv::http::Response{};
+  response.setHeader("Content-Type", "text/plain");
 
-  const auto it = headers.find("Content-Type");
-  ASSERT_NE(it, headers.end());
+  const auto it = response.headers.find("Content-Type");
+  ASSERT_NE(it, response.headers.end());
   EXPECT_EQ(it->second, "text/plain");
 }
 
-TEST(JsonDependencyTest, HeaderOnlyLibraryIsAvailable) {
-  const auto body = nlohmann::json{{"name", "minikv"}, {"replicas", 3}};
+TEST(JsonDependencyTest, BoostJsonLibraryIsAvailable) {
+  auto body = boost::json::object{};
+  body["name"] = "minikv";
+  body["replicas"] = 3;
 
-  EXPECT_EQ(body.at("name"), "minikv");
-  EXPECT_EQ(body.at("replicas"), 3);
+  EXPECT_EQ(body.at("name").as_string(), "minikv");
+  EXPECT_EQ(body.at("replicas").as_int64(), 3);
 }
