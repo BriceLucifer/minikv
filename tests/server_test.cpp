@@ -929,6 +929,63 @@ TEST(ServerRouteTest, QueryRejectsInvalidLimitAndUnknownOperation) {
   cleanup();
 }
 
+TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
+  const auto options = appOptions("route-s3-list-type-two");
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/alpha.txt",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/prefix/bravo&charlie.txt",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/prefix/deleted.txt",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::SOFT,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/other/prefix/ignored.txt",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto res = client.Get("/bucket?list-type=2&prefix=prefix/");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 200);
+    EXPECT_NE(res->get_header_value("Content-Type").find("application/xml"),
+              std::string::npos);
+    EXPECT_NE(res->body.find("<ListBucketResult>"), std::string::npos);
+    EXPECT_NE(res->body.find("<Contents><Key>bravo&amp;charlie.txt</Key></Contents>"),
+              std::string::npos);
+    EXPECT_EQ(res->body.find("alpha.txt"), std::string::npos);
+    EXPECT_EQ(res->body.find("deleted.txt"), std::string::npos);
+    EXPECT_EQ(res->body.find("ignored.txt"), std::string::npos);
+  }
+
+  cleanup();
+}
+
 TEST(ServerRouteTest, DeleteRouteDeletesRemoteObjects) {
   auto remote_delete_called = false;
 
@@ -968,6 +1025,112 @@ TEST(ServerRouteTest, DeleteRouteDeletesRemoteObjects) {
     EXPECT_EQ(res->status, 204);
     EXPECT_TRUE(remote_delete_called);
     EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3BulkDeleteDeletesBucketChildKeys) {
+  auto deleted_paths = std::vector<std::string>{};
+
+  LocalVolumeServer volume;
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &req,
+                                     minikv::http::Response &res) {
+    deleted_paths.push_back(req.path);
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-delete");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/alpha.txt",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/bravo&charlie.txt",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto xml =
+        std::string{"<Delete><Object><Key>alpha.txt</Key></Object>"
+                    "<Object><Key>bravo&amp;charlie.txt</Key></Object></Delete>"};
+    const auto res = client.Post("/bucket?delete", xml);
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 204);
+    ASSERT_EQ(deleted_paths.size(), 2U);
+    EXPECT_EQ(deleted_paths[0], minikv::placement::key2path("/bucket/alpha.txt"));
+    EXPECT_EQ(deleted_paths[1],
+              minikv::placement::key2path("/bucket/bravo&charlie.txt"));
+    EXPECT_EQ(app.getRecord("/bucket/alpha.txt").deleted,
+              minikv::record::Deleted::HARD);
+    EXPECT_EQ(app.getRecord("/bucket/bravo&charlie.txt").deleted,
+              minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3BulkDeleteRejectsMalformedXmlWithoutDeleting) {
+  auto remote_delete_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Delete(R"(/.*)", [&](const minikv::http::Request &,
+                                     minikv::http::Response &res) {
+    remote_delete_called = true;
+    res.status = 204;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-delete-malformed");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.protect = false;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/alpha.txt",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto res =
+        client.Post("/bucket?delete", "<Delete><Object><Key>alpha.txt</Object></Delete>");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 500);
+    EXPECT_FALSE(remote_delete_called);
+    EXPECT_EQ(app.getRecord("/bucket/alpha.txt").deleted,
+              minikv::record::Deleted::NO);
   }
 
   cleanup();

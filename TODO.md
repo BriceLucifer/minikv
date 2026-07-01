@@ -28,6 +28,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     remote volume files.
   - HTTP `REBALANCE` route support for moving one live key to its preferred
     target volumes.
+  - S3-compatible `GET ?list-type=2` XML listing and `POST ?delete` bulk
+    delete for bucket child keys.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
@@ -65,17 +67,18 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   target volumes, updates LevelDB metadata, and deletes stale replicas.
 - nginx/WebDAV end-to-end CTest smoke test, including rebuild recovery and
   rebalance migration.
+- S3-compatible XML listing and bulk delete smoke coverage against real
+  nginx/WebDAV volumes.
 - Master executable entry point with Go-style server flags.
 - CMake presets use Ninja and 24-way parallel build jobs on this machine.
 
 ## Next
 
-1. Implement upstream S3 compatibility routes.
-   - `GET ?list-type=2` should return the upstream XML
-     `ListBucketResult` response.
-   - `POST ?delete` should parse S3 delete XML and bulk-delete child keys.
+1. Implement upstream S3 multipart upload routes.
    - Multipart upload flow remains missing: `POST ?uploads`, `PUT
      ?partNumber=&uploadId=`, and `POST ?uploadId=`.
+   - Store multipart parts outside global `/tmp` or with a namespaced temp path
+     so production deployments can isolate instances safely.
 2. Tighten HTTP adapter behavior against real clients.
    - Add tests for HEAD responses with non-zero `Content-Length` and no body,
      matching nginx behavior.
@@ -89,13 +92,10 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 ## Remaining Capability Gaps
 
 - S3 compatibility:
-  - `GET ?list-type=2` XML listing is not implemented.
-  - `POST ?delete` bulk delete XML parsing is not implemented.
   - Multipart upload init/part/complete routes are not implemented.
 - Exact upstream POST semantics:
-  - Upstream uses `POST` for S3-only operations and locks
-    `path + partNumber`; the C++ master currently rejects unknown methods with
-    400 and has no POST route.
+  - Upstream also uses `POST` for multipart init/complete; the C++ master now
+    handles `POST ?delete` but returns 400 for unsupported multipart routes.
 - Operational parity:
   - The C++ adapter is synchronous and intentionally small; it is functional
     for current tests but not yet tuned like Go's `net/http` server for high

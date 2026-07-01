@@ -34,6 +34,12 @@ public:
                           content_type)};
   }
 
+  TestResult Post(std::string_view path, std::string_view body,
+                  std::string_view content_type = "application/xml") const {
+    return {http::request("POST", origin_ + std::string{path}, body,
+                          content_type)};
+  }
+
   TestResult Custom(std::string_view method, std::string_view path) const {
     return {http::request(method, origin_ + std::string{path})};
   }

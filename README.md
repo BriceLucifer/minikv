@@ -191,6 +191,18 @@ curl -v -L localhost:3000/hello
 curl -v -L -X DELETE localhost:3000/hello
 ```
 
+The C++ master also implements the upstream S3 compatibility subset for bucket
+listing and bulk delete:
+
+```bash
+curl -s 'localhost:3000/bucket?list-type=2'
+curl -X POST -H 'Content-Type: application/xml' \
+  --data-binary '<Delete><Object><Key>file.txt</Key></Object></Delete>' \
+  'localhost:3000/bucket?delete'
+```
+
+Multipart S3 uploads are still tracked as a remaining compatibility item.
+
 ## Release Build
 
 Configure release build:

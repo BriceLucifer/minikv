@@ -13,6 +13,7 @@
 #include <exception>
 #include <numeric>
 #include <random>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -116,6 +117,75 @@ bool parseSize(std::string_view value, std::size_t &out) {
 
   out = parsed;
   return true;
+}
+
+std::string xmlEscape(std::string_view value) {
+  auto out = std::string{};
+  out.reserve(value.size());
+  for (const auto ch : value) {
+    switch (ch) {
+    case '&':
+      out += "&amp;";
+      break;
+    case '<':
+      out += "&lt;";
+      break;
+    case '>':
+      out += "&gt;";
+      break;
+    case '"':
+      out += "&quot;";
+      break;
+    case '\'':
+      out += "&apos;";
+      break;
+    default:
+      out.push_back(ch);
+      break;
+    }
+  }
+  return out;
+}
+
+std::string xmlUnescape(std::string_view value) {
+  auto out = toString(value);
+  const auto replaceAll = [&out](std::string_view from, std::string_view to) {
+    auto pos = std::size_t{0};
+    while ((pos = out.find(from, pos)) != std::string::npos) {
+      out.replace(pos, from.size(), to);
+      pos += to.size();
+    }
+  };
+
+  replaceAll("&lt;", "<");
+  replaceAll("&gt;", ">");
+  replaceAll("&quot;", "\"");
+  replaceAll("&apos;", "'");
+  replaceAll("&amp;", "&");
+  return out;
+}
+
+std::vector<std::string> parseS3DeleteKeys(std::string_view body) {
+  auto keys = std::vector<std::string>{};
+  auto rest = body;
+  static constexpr auto key_open = std::string_view{"<Key>"};
+  static constexpr auto key_close = std::string_view{"</Key>"};
+
+  while (true) {
+    const auto open = rest.find(key_open);
+    if (open == std::string_view::npos) {
+      break;
+    }
+    rest.remove_prefix(open + key_open.size());
+    const auto close = rest.find(key_close);
+    if (close == std::string_view::npos) {
+      throw std::runtime_error("malformed S3 delete XML");
+    }
+    keys.push_back(xmlUnescape(rest.substr(0, close)));
+    rest.remove_prefix(close + key_close.size());
+  }
+
+  return keys;
 }
 
 } // namespace
@@ -352,6 +422,41 @@ QueryResult App::query(std::string_view key, std::string_view operation,
   return {.status = 200, .content_type = "application/json", .body = body};
 }
 
+QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const {
+  auto scan_prefix = toString(bucket);
+  scan_prefix += "/";
+  scan_prefix += prefix;
+
+  auto body = std::ostringstream{};
+  body << "<ListBucketResult>";
+  const auto records = index_.listRecords(scan_prefix, "", 0);
+  for (const auto &entry : records.records) {
+    if (entry.record.deleted != record::Deleted::NO) {
+      continue;
+    }
+    body << "<Contents><Key>"
+         << xmlEscape(std::string_view{entry.key}.substr(scan_prefix.size()))
+         << "</Key></Contents>";
+  }
+  body << "</ListBucketResult>";
+
+  return {.status = 200, .content_type = "application/xml", .body = body.str()};
+}
+
+S3DeleteResult App::s3Delete(std::string_view bucket,
+                             const std::vector<std::string> &keys) {
+  for (const auto &key : keys) {
+    auto full_key = toString(bucket);
+    full_key += "/";
+    full_key += key;
+    const auto result = deleteFromReplicas(full_key);
+    if (result.status != 204) {
+      return {.status = result.status};
+    }
+  }
+  return {.status = 204};
+}
+
 const AppOptions &App::options() const { return options_; }
 
 std::vector<std::size_t> replicaProbeOrder(std::size_t count) {
@@ -376,6 +481,13 @@ http::Response handleRequest(App &app, const http::Request &req) {
   }
 
   if (req.method == "GET") {
+    if (req.getParamValue("list-type") == "2") {
+      const auto result = app.s3List(req.path, req.getParamValue("prefix"));
+      auto res = http::Response{.status = result.status};
+      res.setContent(result.body, result.content_type);
+      return res;
+    }
+
     const auto operation = firstQueryOperation(req);
     if (!operation.empty()) {
       const auto result =
@@ -398,7 +510,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
   }
 
   if (req.method == "PUT") {
-    auto key_lock = KeyLockGuard{app, req.path};
+    auto lock_key = req.path + req.getParamValue("partNumber");
+    auto key_lock = KeyLockGuard{app, lock_key};
     if (!key_lock.locked()) {
       return makeEmptyResponse(409);
     }
@@ -413,6 +526,25 @@ http::Response handleRequest(App &app, const http::Request &req) {
 
     const auto result = app.writeToReplicas(req.path, req.body);
     return makeEmptyResponse(result.status);
+  }
+
+  if (req.method == "POST") {
+    auto lock_key = req.path + req.getParamValue("partNumber");
+    auto key_lock = KeyLockGuard{app, lock_key};
+    if (!key_lock.locked()) {
+      return makeEmptyResponse(409);
+    }
+
+    if (firstQueryOperation(req) == "delete") {
+      try {
+        const auto keys = parseS3DeleteKeys(req.body);
+        return makeEmptyResponse(app.s3Delete(req.path, keys).status);
+      } catch (const std::exception &) {
+        return makeEmptyResponse(500);
+      }
+    }
+
+    return makeEmptyResponse(400);
   }
 
   if (req.method == "DELETE" || req.method == "UNLINK") {

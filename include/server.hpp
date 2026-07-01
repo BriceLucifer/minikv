@@ -56,6 +56,10 @@ struct RebalanceResult {
   int status;
 };
 
+struct S3DeleteResult {
+  int status;
+};
+
 class App {
  public:
   explicit App(AppOptions options);
@@ -73,6 +77,9 @@ class App {
   RebalanceResult rebalanceReplicas(std::string_view key);
   QueryResult query(std::string_view key, std::string_view operation,
                     std::string_view start, std::string_view limit) const;
+  QueryResult s3List(std::string_view bucket, std::string_view prefix) const;
+  S3DeleteResult s3Delete(std::string_view bucket,
+                          const std::vector<std::string> &keys);
 
   const AppOptions &options() const;
 

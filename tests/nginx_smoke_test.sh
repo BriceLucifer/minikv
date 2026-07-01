@@ -178,6 +178,38 @@ if [[ "$head_status" != "302" ]]; then
   exit 1
 fi
 
+s3_put_status=$(curl -sS -o /dev/null -w "%{http_code}" \
+  -X PUT --data-binary @"$PUT_BODY" \
+  "http://127.0.0.1:$MASTER_PORT/bucket/hello")
+if [[ "$s3_put_status" != "201" ]]; then
+  echo "S3-style PUT returned $s3_put_status" >&2
+  exit 1
+fi
+
+s3_list_body=$(curl -sS "http://127.0.0.1:$MASTER_PORT/bucket?list-type=2")
+if [[ "$s3_list_body" != *"<ListBucketResult>"* ||
+      "$s3_list_body" != *"<Contents><Key>hello</Key></Contents>"* ]]; then
+  echo "S3 list-type=2 response did not include bucket object" >&2
+  echo "$s3_list_body" >&2
+  exit 1
+fi
+
+s3_delete_status=$(curl -sS -o /dev/null -w "%{http_code}" \
+  -X POST -H 'Content-Type: application/xml' \
+  --data-binary '<Delete><Object><Key>hello</Key></Object></Delete>' \
+  "http://127.0.0.1:$MASTER_PORT/bucket?delete")
+if [[ "$s3_delete_status" != "204" ]]; then
+  echo "S3 bulk delete returned $s3_delete_status" >&2
+  exit 1
+fi
+
+s3_deleted_status=$(curl -sS -o /dev/null -w "%{http_code}" \
+  "http://127.0.0.1:$MASTER_PORT/bucket/hello")
+if [[ "$s3_deleted_status" != "404" ]]; then
+  echo "GET after S3 bulk delete returned $s3_deleted_status" >&2
+  exit 1
+fi
+
 kill "$MASTER_PID" >/dev/null 2>&1 || true
 wait "$MASTER_PID" >/dev/null 2>&1 || true
 MASTER_PID=""
