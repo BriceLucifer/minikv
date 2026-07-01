@@ -10,7 +10,14 @@ struct Response {
     std::string body;
 };
 
+struct HeadResult {
+    bool found;
+    std::string content_length;
+    std::string etag;
+};
+
 Response remoteGet(std::string_view url);
+HeadResult remoteHeadInfo(std::string_view url, std::chrono::milliseconds timeout);
 bool remoteHead(std::string_view url, std::chrono::milliseconds timeout);
 void remotePut(std::string_view url, std::string_view body);
 void remoteDelete(std::string_view url);

@@ -157,6 +157,27 @@ TEST(VolumeClientTest, RemoteHeadReturnsWhetherObjectExists) {
     EXPECT_FALSE(minikv::volume_client::remoteHead(local.url("/missing"), 100ms));
 }
 
+TEST(VolumeClientTest, RemoteHeadInfoReturnsObjectMetadata) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{.status = 200};
+        EXPECT_EQ(req.method, "HEAD");
+        EXPECT_EQ(req.path, "/present");
+        res.setHeader("Content-Length", "123");
+        res.setHeader("ETag", "\"abc123\"");
+        return res;
+    });
+    local.start();
+
+    using namespace std::chrono_literals;
+    const auto head =
+        minikv::volume_client::remoteHeadInfo(local.url("/present"), 100ms);
+
+    EXPECT_TRUE(head.found);
+    EXPECT_EQ(head.content_length, "123");
+    EXPECT_EQ(head.etag, "\"abc123\"");
+}
+
 // Real nginx HEAD responses include the object's Content-Length while sending
 // no response body. The adapter must not wait for a body that will never arrive.
 TEST(HttpAdapterTest, HeadSkipsNonZeroLengthResponseBody) {

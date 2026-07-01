@@ -31,9 +31,17 @@ Response remoteGet(std::string_view url) {
     return {res.status, res.body};
 }
 
-bool remoteHead(std::string_view url, std::chrono::milliseconds timeout) {
+HeadResult remoteHeadInfo(std::string_view url, std::chrono::milliseconds timeout) {
     const auto res = http::request("HEAD", url, {}, "application/octet-stream", timeout);
-    return res.status == 200;
+    return {
+        .found = res.status == 200,
+        .content_length = res.headerValue("Content-Length"),
+        .etag = res.headerValue("ETag"),
+    };
+}
+
+bool remoteHead(std::string_view url, std::chrono::milliseconds timeout) {
+    return remoteHeadInfo(url, timeout).found;
 }
 
 void remotePut(std::string_view url, std::string_view body) {

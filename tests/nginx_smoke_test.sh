@@ -189,7 +189,9 @@ fi
 
 s3_list_body=$(curl -sS "http://127.0.0.1:$MASTER_PORT/bucket?list-type=2")
 if [[ "$s3_list_body" != *"<ListBucketResult>"* ||
-      "$s3_list_body" != *"<Contents><Key>hello</Key></Contents>"* ]]; then
+      "$s3_list_body" != *"<Contents><Key>hello</Key>"* ||
+      "$s3_list_body" != *"<Size>22</Size>"* ||
+      "$s3_list_body" != *"<ETag>"* ]]; then
   echo "S3 list-type=2 response did not include bucket object" >&2
   echo "$s3_list_body" >&2
   exit 1

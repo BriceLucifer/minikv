@@ -74,6 +74,33 @@ std::string quotedEtag(std::string_view body) {
   return "\"" + md5_hex(body) + "\"";
 }
 
+struct ObjectMetadata {
+  std::string size;
+  std::string etag;
+};
+
+ObjectMetadata objectMetadataFromReplicas(const record::Record &rec,
+                                          std::string_view key,
+                                          std::chrono::milliseconds timeout) {
+  const auto keypath = placement::key2path(key);
+  for (const auto &volume : rec.rvolumes) {
+    if (volume.empty()) {
+      continue;
+    }
+
+    try {
+      const auto head =
+          volume_client::remoteHeadInfo("http://" + volume + keypath, timeout);
+      if (head.found) {
+        return {.size = head.content_length, .etag = head.etag};
+      }
+    } catch (const std::exception &) {
+    }
+  }
+
+  return {};
+}
+
 http::Response applyReadResult(const ReadResult &result) {
   // Route handlers stay thin: App methods decide status and metadata, while
   // this adapter only translates the result into HTTP headers.
@@ -489,9 +516,18 @@ QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const 
     if (entry.record.deleted != record::Deleted::NO) {
       continue;
     }
+    const auto metadata =
+        objectMetadataFromReplicas(entry.record, entry.key, options_.volume_timeout);
     body << "<Contents><Key>"
          << xmlEscape(std::string_view{entry.key}.substr(scan_prefix.size()))
-         << "</Key></Contents>";
+         << "</Key>";
+    if (!metadata.size.empty()) {
+      body << "<Size>" << xmlEscape(metadata.size) << "</Size>";
+    }
+    if (!metadata.etag.empty()) {
+      body << "<ETag>" << xmlEscape(metadata.etag) << "</ETag>";
+    }
+    body << "</Contents>";
   }
   body << "</ListBucketResult>";
 

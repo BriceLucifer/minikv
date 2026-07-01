@@ -948,7 +948,25 @@ TEST(ServerRouteTest, QueryRejectsInvalidLimitAndUnknownOperation) {
 }
 
 TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
-  const auto options = appOptions("route-s3-list-type-two");
+  LocalVolumeServer volume;
+  volume.server.Get(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
+    if (req.path ==
+        minikv::placement::key2path("/bucket/prefix/bravo&charlie.txt")) {
+      res.status = 200;
+      res.setHeader("Content-Length", "456");
+      res.setHeader("ETag", "\"bravo-etag\"");
+      return;
+    }
+    res.status = 404;
+    res.setHeader("Content-Length", "0");
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-list-type-two");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
   {
@@ -956,28 +974,28 @@ TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
     ASSERT_TRUE(app.putRecord(
         "/bucket/alpha.txt",
         minikv::record::Record{
-            .rvolumes = {"volume-a"},
+            .rvolumes = {volume.volume()},
             .deleted = minikv::record::Deleted::NO,
             .hash = "",
         }));
     ASSERT_TRUE(app.putRecord(
         "/bucket/prefix/bravo&charlie.txt",
         minikv::record::Record{
-            .rvolumes = {"volume-a"},
+            .rvolumes = {volume.volume()},
             .deleted = minikv::record::Deleted::NO,
             .hash = "",
         }));
     ASSERT_TRUE(app.putRecord(
         "/bucket/prefix/deleted.txt",
         minikv::record::Record{
-            .rvolumes = {"volume-a"},
+            .rvolumes = {volume.volume()},
             .deleted = minikv::record::Deleted::SOFT,
             .hash = "",
         }));
     ASSERT_TRUE(app.putRecord(
         "/other/prefix/ignored.txt",
         minikv::record::Record{
-            .rvolumes = {"volume-a"},
+            .rvolumes = {volume.volume()},
             .deleted = minikv::record::Deleted::NO,
             .hash = "",
         }));
@@ -994,7 +1012,10 @@ TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
     EXPECT_NE(res->get_header_value("Content-Type").find("application/xml"),
               std::string::npos);
     EXPECT_NE(res->body.find("<ListBucketResult>"), std::string::npos);
-    EXPECT_NE(res->body.find("<Contents><Key>bravo&amp;charlie.txt</Key></Contents>"),
+    EXPECT_NE(res->body.find("<Contents><Key>bravo&amp;charlie.txt</Key>"),
+              std::string::npos);
+    EXPECT_NE(res->body.find("<Size>456</Size>"), std::string::npos);
+    EXPECT_NE(res->body.find("<ETag>&quot;bravo-etag&quot;</ETag>"),
               std::string::npos);
     EXPECT_EQ(res->body.find("alpha.txt"), std::string::npos);
     EXPECT_EQ(res->body.find("deleted.txt"), std::string::npos);

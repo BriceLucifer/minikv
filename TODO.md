@@ -7,6 +7,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - Current direction: keep the original architecture of C++ master plus external
   nginx/WebDAV volume servers. Do not replace nginx with a C++ volume server.
 - Recently completed work includes:
+  - Upstream README parity review for the core API, nginx volume model,
+    rebuild/rebalance workflow, and S3 compatibility subset.
   - Go-style CLI parsing and `mkv server` executable entry point.
   - GET/HEAD behavior closer to Go: fallback redirects, `Content-Md5`,
     `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing.
@@ -30,6 +32,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     target volumes.
   - S3-compatible `GET ?list-type=2` XML listing and `POST ?delete` bulk
     delete for bucket child keys.
+  - S3 `ListObjectsV2` responses now include object `Size` and `ETag`
+    metadata when a live replica can be probed.
   - S3-compatible multipart upload routes: `POST ?uploads`, `PUT
     ?partNumber=&uploadId=`, `POST ?uploadId=`, and `DELETE ?uploadId=`.
   - S3-style quoted MD5 `ETag` metadata for successful object `PUT`,
@@ -47,7 +51,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `86/86 tests passed`
+  - `ctest --preset debug` with `87/87 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -82,6 +86,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   rebalance migration.
 - S3-compatible XML listing and bulk delete smoke coverage against real
   nginx/WebDAV volumes.
+- S3 list responses include per-object `Size` and `ETag` metadata from
+  volume-server `HEAD`, with unit and nginx smoke coverage.
 - S3-compatible multipart upload with per-DB namespaced temporary part files
   and nginx/WebDAV smoke coverage.
 - S3 write responses include quoted MD5 `ETag` headers for normal writes,
@@ -104,7 +110,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 ## Next
 
 1. Broaden upstream parity checks.
-   - Compare C++ behavior against upstream `tools/s3test.py`.
+   - Compare C++ behavior against upstream `tools/s3test.py` with real
+     boto3/PyArrow clients.
 2. Improve production durability around multipart uploads.
    - Add time-based expiry for abandoned multipart uploads in a running
      process.
