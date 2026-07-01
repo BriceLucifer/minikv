@@ -539,11 +539,9 @@ int App::writeMultipartPart(std::string_view upload_id, int part_number,
     return 403;
   }
 
-  {
-    auto lock = std::scoped_lock{multipart_mutex_};
-    if (!upload_ids_.contains(toString(upload_id))) {
-      return 403;
-    }
+  auto lock = std::scoped_lock{multipart_mutex_};
+  if (!upload_ids_.contains(toString(upload_id))) {
+    return 403;
   }
 
   std::filesystem::create_directories(multipartRoot());
@@ -554,6 +552,30 @@ int App::writeMultipartPart(std::string_view upload_id, int part_number,
   }
   file.write(body.data(), static_cast<std::streamsize>(body.size()));
   return file ? 200 : 403;
+}
+
+int App::abortMultipartUpload(std::string_view upload_id) {
+  auto lock = std::scoped_lock{multipart_mutex_};
+  const auto upload = toString(upload_id);
+  if (!upload_ids_.erase(upload)) {
+    return 404;
+  }
+
+  const auto root = multipartRoot();
+  if (std::filesystem::exists(root)) {
+    const auto prefix = upload + "-";
+    for (const auto &entry : std::filesystem::directory_iterator{root}) {
+      if (!entry.is_regular_file()) {
+        continue;
+      }
+      const auto name = entry.path().filename().string();
+      if (name.starts_with(prefix)) {
+        std::filesystem::remove(entry.path());
+      }
+    }
+  }
+
+  return 204;
 }
 
 MultipartUploadResult App::completeMultipartUpload(
@@ -771,6 +793,11 @@ http::Response handleRequest(App &app, const http::Request &req) {
     auto key_lock = KeyLockGuard{app, req.path};
     if (!key_lock.locked()) {
       return makeEmptyResponse(409);
+    }
+
+    if (req.method == "DELETE" && !req.getParamValue("uploadId").empty()) {
+      return makeEmptyResponse(
+          app.abortMultipartUpload(req.getParamValue("uploadId")));
     }
 
     const auto result = app.deleteFromReplicas(req.path, req.method == "UNLINK");

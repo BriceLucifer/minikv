@@ -31,7 +31,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - S3-compatible `GET ?list-type=2` XML listing and `POST ?delete` bulk
     delete for bucket child keys.
   - S3-compatible multipart upload routes: `POST ?uploads`, `PUT
-    ?partNumber=&uploadId=`, and `POST ?uploadId=`.
+    ?partNumber=&uploadId=`, `POST ?uploadId=`, and `DELETE ?uploadId=`.
   - S3-style quoted MD5 `ETag` metadata for successful object `PUT`,
     multipart part upload, and multipart completion responses.
   - Multipart completion now rechecks overwrite protection, so an upload
@@ -47,7 +47,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `85/85 tests passed`
+  - `ctest --preset debug` with `86/86 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -87,8 +87,10 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - S3 write responses include quoted MD5 `ETag` headers for normal writes,
   multipart part writes, and completed multipart objects; completed multipart
   XML also includes the final object ETag.
+- S3-compatible abort multipart upload removes staged part files, invalidates
+  the upload id, and leaves object metadata/remote replicas untouched.
 - Multipart route tests cover completion-time overwrite rejection and lock
-  conflicts for init, part upload, and completion.
+  conflicts for init, part upload, abort, and completion.
 - Multipart startup cleanup removes stale scratch files left by previous
   processes, and failed completion due to missing parts keeps the upload id
   usable for retry.
@@ -113,7 +115,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 - S3 compatibility:
   - Current multipart support matches the upstream route shape but does not yet
-    expose full AWS S3 response metadata or abort-multipart handling.
+    expose full AWS S3 response metadata.
 - Operational parity:
   - The C++ adapter now uses bounded server workers and timeout-aware async
     client operations, but it is not yet tuned like Go's `net/http` stack for

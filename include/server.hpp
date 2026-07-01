@@ -90,6 +90,7 @@ class App {
   MultipartUploadResult createMultipartUpload(std::string_view key);
   int writeMultipartPart(std::string_view upload_id, int part_number,
                          std::string_view body);
+  int abortMultipartUpload(std::string_view upload_id);
   MultipartUploadResult completeMultipartUpload(
       std::string_view key, std::string_view upload_id,
       const std::vector<int> &part_numbers);
