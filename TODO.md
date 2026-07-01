@@ -93,8 +93,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
-  - `UV_CACHE_DIR=/home/brice/minikv/.cache/uv /home/brice/.local/bin/uv pip
-    install requests boto3 pyarrow`
+  - `tests/ensure_python_test_env.sh` synced the repository-local `.venv` from
+    `pyproject.toml` with `uv`.
   - `cmake --build --preset debug`
   - `MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 ctest --preset debug -R
     UpstreamCompatTest --output-on-failure`
@@ -179,7 +179,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   query keys, malformed percent escapes, stalled response timeouts, and custom
   method forwarding.
 - Master executable entry point with Go-style server flags.
-- CMake presets use Ninja and 24-way parallel build jobs on this machine.
+- CMake presets use Ninja and leave build parallelism to Ninja's platform
+  default so each machine can use its own detected worker count.
 
 ## Next
 

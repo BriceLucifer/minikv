@@ -3,14 +3,8 @@ set -euo pipefail
 
 MKV_BIN=${1:?mkv binary path required}
 PY_TEST=${2:?upstream compatibility python test path required}
-PYTHON_BIN=${MINIKV_PYTHON:-}
-
-if [[ -z "$PYTHON_BIN" ]]; then
-  PYTHON_BIN="$(cd "$(dirname "$PY_TEST")/.." && pwd)/.venv/bin/python3"
-  if [[ ! -x "$PYTHON_BIN" ]]; then
-    PYTHON_BIN=python3
-  fi
-fi
+REPO_ROOT=$(cd "$(dirname "$PY_TEST")/.." && pwd)
+PYTHON_BIN=$("$REPO_ROOT/tests/ensure_python_test_env.sh" "$REPO_ROOT")
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then

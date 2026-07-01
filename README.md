@@ -152,7 +152,8 @@ Runtime services:
 - One writable filesystem directory per volume
 - One LevelDB directory for the master index
 
-Optional compatibility test clients:
+Optional compatibility test clients are managed by `uv` from
+`pyproject.toml`:
 
 - `requests`
 - `boto3`
@@ -201,14 +202,10 @@ then runs `tests/s3_compat_test.py`. The topology follows the upstream deploy
 shape with five nginx/WebDAV volumes behind one master using three replicas.
 The Python suite mirrors the intent of upstream `tools/s3test.py`: boto3
 write/list/delete, the known redirect-based `get_object` expected failure, and
-PyArrow file-info/list/delete/parquet checks. If `boto3` or `pyarrow` are not
-installed, those suites are reported as skipped rather than failing the core
-build. Set `MINIKV_RUN_LARGE_S3_COMPAT=1` to include the larger multipart
-parquet roundtrip.
-
-If a local `.venv` exists at the repository root, the harness uses
-`.venv/bin/python3` automatically. This keeps boto3/PyArrow test dependencies
-out of the system Python while still exercising the real client libraries.
+PyArrow file-info/list/delete/parquet checks. The shell harness calls
+`tests/ensure_python_test_env.sh`, which runs `uv sync` from `pyproject.toml`
+and uses the repository-local `.venv`. Set `MINIKV_RUN_LARGE_S3_COMPAT=1` to
+include the larger multipart parquet roundtrip.
 
 For a strict environment where missing boto3/PyArrow should fail the test
 instead of skipping it:
@@ -437,12 +434,11 @@ MINIKV_REQUIRE_S3_COMPAT_DEPS=1 \
   ctest --preset debug -R S3CompatTest --output-on-failure
 ```
 
-For a machine without system Python packages, install the optional client
-libraries into the local virtualenv with `uv`:
+For a machine without system Python packages, let `uv` create and sync the
+repository-local test environment:
 
 ```bash
-UV_CACHE_DIR=$PWD/.cache/uv uv venv .venv
-UV_CACHE_DIR=$PWD/.cache/uv uv pip install requests boto3 pyarrow
+tests/ensure_python_test_env.sh
 ```
 
 Operational notes:
