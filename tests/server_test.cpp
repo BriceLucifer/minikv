@@ -570,6 +570,8 @@ TEST(ServerRouteTest, PutRouteWritesToReplicas) {
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 201);
+    EXPECT_EQ(res->get_header_value("ETag"),
+              "\"" + minikv::md5_hex("payload") + "\"");
     EXPECT_EQ(received_body, "payload");
 
     const auto rec = app.getRecord("/hello");
@@ -1194,12 +1196,16 @@ TEST(ServerRouteTest, S3MultipartUploadCombinesPartsAndWritesReplicas) {
                    "world", "application/octet-stream");
     ASSERT_TRUE(second);
     EXPECT_EQ(second->status, 200);
+    EXPECT_EQ(second->get_header_value("ETag"),
+              "\"" + minikv::md5_hex("world") + "\"");
 
     const auto first =
         client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
                    "hello ", "application/octet-stream");
     ASSERT_TRUE(first);
     EXPECT_EQ(first->status, 200);
+    EXPECT_EQ(first->get_header_value("ETag"),
+              "\"" + minikv::md5_hex("hello ") + "\"");
 
     const auto complete_xml =
         std::string{"<CompleteMultipartUpload>"
@@ -1211,7 +1217,11 @@ TEST(ServerRouteTest, S3MultipartUploadCombinesPartsAndWritesReplicas) {
 
     ASSERT_TRUE(complete);
     EXPECT_EQ(complete->status, 201);
+    const auto complete_etag = "\"" + minikv::md5_hex("hello world") + "\"";
+    EXPECT_EQ(complete->get_header_value("ETag"), complete_etag);
     EXPECT_NE(complete->body.find("<CompleteMultipartUploadResult>"),
+              std::string::npos);
+    EXPECT_NE(complete->body.find("<ETag>" + complete_etag + "</ETag>"),
               std::string::npos);
     EXPECT_EQ(received_body, "hello world");
 

@@ -63,6 +63,7 @@ struct S3DeleteResult {
 struct MultipartUploadResult {
   int status;
   std::string upload_id;
+  std::string etag;
   std::string body;
 };
 

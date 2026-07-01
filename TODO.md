@@ -32,6 +32,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     delete for bucket child keys.
   - S3-compatible multipart upload routes: `POST ?uploads`, `PUT
     ?partNumber=&uploadId=`, and `POST ?uploadId=`.
+  - S3-style quoted MD5 `ETag` metadata for successful object `PUT`,
+    multipart part upload, and multipart completion responses.
   - Multipart completion now rechecks overwrite protection, so an upload
     initialized before another writer creates the key cannot replace the live
     object.
@@ -82,6 +84,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   nginx/WebDAV volumes.
 - S3-compatible multipart upload with per-DB namespaced temporary part files
   and nginx/WebDAV smoke coverage.
+- S3 write responses include quoted MD5 `ETag` headers for normal writes,
+  multipart part writes, and completed multipart objects; completed multipart
+  XML also includes the final object ETag.
 - Multipart route tests cover completion-time overwrite rejection and lock
   conflicts for init, part upload, and completion.
 - Multipart startup cleanup removes stale scratch files left by previous
@@ -108,7 +113,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 - S3 compatibility:
   - Current multipart support matches the upstream route shape but does not yet
-    expose full AWS S3 response metadata, ETags, or abort-multipart handling.
+    expose full AWS S3 response metadata or abort-multipart handling.
 - Operational parity:
   - The C++ adapter now uses bounded server workers and timeout-aware async
     client operations, but it is not yet tuned like Go's `net/http` stack for

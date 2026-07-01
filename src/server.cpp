@@ -70,6 +70,10 @@ http::Response makeEmptyResponse(int status) {
   return res;
 }
 
+std::string quotedEtag(std::string_view body) {
+  return "\"" + md5_hex(body) + "\"";
+}
+
 http::Response applyReadResult(const ReadResult &result) {
   // Route handlers stay thin: App methods decide status and metadata, while
   // this adapter only translates the result into HTTP headers.
@@ -510,7 +514,7 @@ S3DeleteResult App::s3Delete(std::string_view bucket,
 
 MultipartUploadResult App::createMultipartUpload(std::string_view key) {
   if (getRecord(key).deleted == record::Deleted::NO) {
-    return {.status = 403, .upload_id = "", .body = ""};
+    return {.status = 403, .upload_id = "", .etag = "", .body = ""};
   }
 
   auto upload_id = std::string{};
@@ -526,7 +530,7 @@ MultipartUploadResult App::createMultipartUpload(std::string_view key) {
                     xmlEscape(upload_id) +
                     "</UploadId>\n"
                     "      </InitiateMultipartUploadResult>";
-  return {.status = 200, .upload_id = upload_id, .body = body};
+  return {.status = 200, .upload_id = upload_id, .etag = "", .body = body};
 }
 
 int App::writeMultipartPart(std::string_view upload_id, int part_number,
@@ -556,19 +560,19 @@ MultipartUploadResult App::completeMultipartUpload(
     std::string_view key, std::string_view upload_id,
     const std::vector<int> &part_numbers) {
   if (getRecord(key).deleted == record::Deleted::NO) {
-    return {.status = 403, .upload_id = "", .body = ""};
+    return {.status = 403, .upload_id = "", .etag = "", .body = ""};
   }
 
   {
     auto lock = std::scoped_lock{multipart_mutex_};
     if (!upload_ids_.contains(toString(upload_id))) {
-      return {.status = 403, .upload_id = "", .body = ""};
+      return {.status = 403, .upload_id = "", .etag = "", .body = ""};
     }
   }
 
   for (const auto part_number : part_numbers) {
     if (!std::filesystem::exists(multipartPartPath(upload_id, part_number))) {
-      return {.status = 403, .upload_id = "", .body = ""};
+      return {.status = 403, .upload_id = "", .etag = "", .body = ""};
     }
   }
 
@@ -577,15 +581,16 @@ MultipartUploadResult App::completeMultipartUpload(
     const auto path = multipartPartPath(upload_id, part_number);
     auto file = std::ifstream{path, std::ios::binary};
     if (!file) {
-      return {.status = 403, .upload_id = "", .body = ""};
+      return {.status = 403, .upload_id = "", .etag = "", .body = ""};
     }
     body.append(std::istreambuf_iterator<char>{file},
                 std::istreambuf_iterator<char>{});
   }
 
+  const auto etag = quotedEtag(body);
   const auto result = writeToReplicas(key, body);
   if (result.status != 201) {
-    return {.status = result.status, .upload_id = "", .body = ""};
+    return {.status = result.status, .upload_id = "", .etag = "", .body = ""};
   }
 
   for (const auto part_number : part_numbers) {
@@ -599,7 +604,9 @@ MultipartUploadResult App::completeMultipartUpload(
 
   return {.status = result.status,
           .upload_id = "",
-          .body = "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>"};
+          .etag = etag,
+          .body = "<CompleteMultipartUploadResult><ETag>" + etag +
+                  "</ETag></CompleteMultipartUploadResult>"};
 }
 
 std::filesystem::path App::multipartRoot() const {
@@ -691,13 +698,21 @@ http::Response handleRequest(App &app, const http::Request &req) {
         return makeEmptyResponse(403);
       }
 
-      return makeEmptyResponse(app.writeMultipartPart(
+      auto res = makeEmptyResponse(app.writeMultipartPart(
           req.getParamValue("uploadId"), static_cast<int>(parsed_part_number),
           req.body));
+      if (res.status == 200) {
+        res.setHeader("ETag", quotedEtag(req.body));
+      }
+      return res;
     }
 
     const auto result = app.writeToReplicas(req.path, req.body);
-    return makeEmptyResponse(result.status);
+    auto res = makeEmptyResponse(result.status);
+    if (result.status == 201) {
+      res.setHeader("ETag", quotedEtag(req.body));
+    }
+    return res;
   }
 
   if (req.method == "POST") {
@@ -737,6 +752,9 @@ http::Response handleRequest(App &app, const http::Request &req) {
         auto res = http::Response{.status = result.status};
         if (!result.body.empty()) {
           res.setContent(result.body, "application/xml");
+          if (!result.etag.empty()) {
+            res.setHeader("ETag", result.etag);
+          }
         } else {
           res.setHeader("Content-Length", "0");
         }
