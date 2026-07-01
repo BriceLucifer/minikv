@@ -192,16 +192,28 @@ curl -v -L -X DELETE localhost:3000/hello
 ```
 
 The C++ master also implements the upstream S3 compatibility subset for bucket
-listing and bulk delete:
+listing, bulk delete, and multipart upload:
 
 ```bash
 curl -s 'localhost:3000/bucket?list-type=2'
 curl -X POST -H 'Content-Type: application/xml' \
   --data-binary '<Delete><Object><Key>file.txt</Key></Object></Delete>' \
   'localhost:3000/bucket?delete'
+
+UPLOAD_ID=$(curl -s -X POST 'localhost:3000/bucket/large.bin?uploads' |
+  sed -n 's:.*<UploadId>\([^<]*\)</UploadId>.*:\1:p')
+curl -X PUT --data-binary @part-1.bin \
+  "localhost:3000/bucket/large.bin?partNumber=1&uploadId=$UPLOAD_ID"
+curl -X PUT --data-binary @part-2.bin \
+  "localhost:3000/bucket/large.bin?partNumber=2&uploadId=$UPLOAD_ID"
+curl -X POST -H 'Content-Type: application/xml' \
+  --data-binary '<CompleteMultipartUpload><Part><PartNumber>1</PartNumber></Part><Part><PartNumber>2</PartNumber></Part></CompleteMultipartUpload>' \
+  "localhost:3000/bucket/large.bin?uploadId=$UPLOAD_ID"
 ```
 
-Multipart S3 uploads are still tracked as a remaining compatibility item.
+Multipart part files are stored under a path derived from the LevelDB path
+instead of global `/tmp`, so multiple deployments do not share upload scratch
+space by accident.
 
 ## Release Build
 

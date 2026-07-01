@@ -58,6 +58,7 @@ MASTER_LOG="$ROOT/master.log"
 VOLUME_LOG="$ROOT/nginx.log"
 PUT_BODY="$ROOT/put-body"
 GET_BODY="$ROOT/get-body"
+MULTIPART_BODY="$ROOT/multipart-body"
 HEADERS="$ROOT/headers"
 
 mkdir -p "$VOLUME1_ROOT" "$VOLUME2_ROOT" "$NGINX_PREFIX"
@@ -207,6 +208,49 @@ s3_deleted_status=$(curl -sS -o /dev/null -w "%{http_code}" \
   "http://127.0.0.1:$MASTER_PORT/bucket/hello")
 if [[ "$s3_deleted_status" != "404" ]]; then
   echo "GET after S3 bulk delete returned $s3_deleted_status" >&2
+  exit 1
+fi
+
+multipart_init_body=$(curl -sS -X POST \
+  "http://127.0.0.1:$MASTER_PORT/bucket/multipart?uploads")
+multipart_upload_id=$(printf '%s' "$multipart_init_body" |
+  sed -n 's:.*<UploadId>\([^<]*\)</UploadId>.*:\1:p')
+if [[ -z "$multipart_upload_id" ]]; then
+  echo "multipart init did not return an UploadId" >&2
+  echo "$multipart_init_body" >&2
+  exit 1
+fi
+
+multipart_part1_status=$(printf '%s' "hello " | curl -sS -o /dev/null \
+  -w "%{http_code}" -X PUT --data-binary @- \
+  "http://127.0.0.1:$MASTER_PORT/bucket/multipart?partNumber=1&uploadId=$multipart_upload_id")
+if [[ "$multipart_part1_status" != "200" ]]; then
+  echo "multipart part 1 returned $multipart_part1_status" >&2
+  exit 1
+fi
+
+multipart_part2_status=$(printf '%s' "multipart smoke" | curl -sS -o /dev/null \
+  -w "%{http_code}" -X PUT --data-binary @- \
+  "http://127.0.0.1:$MASTER_PORT/bucket/multipart?partNumber=2&uploadId=$multipart_upload_id")
+if [[ "$multipart_part2_status" != "200" ]]; then
+  echo "multipart part 2 returned $multipart_part2_status" >&2
+  exit 1
+fi
+
+multipart_complete_status=$(curl -sS -o /dev/null -w "%{http_code}" \
+  -X POST -H 'Content-Type: application/xml' \
+  --data-binary '<CompleteMultipartUpload><Part><PartNumber>1</PartNumber></Part><Part><PartNumber>2</PartNumber></Part></CompleteMultipartUpload>' \
+  "http://127.0.0.1:$MASTER_PORT/bucket/multipart?uploadId=$multipart_upload_id")
+if [[ "$multipart_complete_status" != "201" ]]; then
+  echo "multipart complete returned $multipart_complete_status" >&2
+  exit 1
+fi
+
+printf '%s' "hello multipart smoke" >"$MULTIPART_BODY"
+curl -sS -L -o "$GET_BODY" \
+  "http://127.0.0.1:$MASTER_PORT/bucket/multipart"
+if ! cmp -s "$MULTIPART_BODY" "$GET_BODY"; then
+  echo "GET -L body after multipart upload did not match completed body" >&2
   exit 1
 fi
 

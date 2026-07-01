@@ -30,11 +30,13 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     target volumes.
   - S3-compatible `GET ?list-type=2` XML listing and `POST ?delete` bulk
     delete for bucket child keys.
+  - S3-compatible multipart upload routes: `POST ?uploads`, `PUT
+    ?partNumber=&uploadId=`, and `POST ?uploadId=`.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `69/69 tests passed`
+  - `ctest --preset debug` with `75/75 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -69,33 +71,31 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   rebalance migration.
 - S3-compatible XML listing and bulk delete smoke coverage against real
   nginx/WebDAV volumes.
+- S3-compatible multipart upload with per-DB namespaced temporary part files
+  and nginx/WebDAV smoke coverage.
 - Master executable entry point with Go-style server flags.
 - CMake presets use Ninja and 24-way parallel build jobs on this machine.
 
 ## Next
 
-1. Implement upstream S3 multipart upload routes.
-   - Multipart upload flow remains missing: `POST ?uploads`, `PUT
-     ?partNumber=&uploadId=`, and `POST ?uploadId=`.
-   - Store multipart parts outside global `/tmp` or with a namespaced temp path
-     so production deployments can isolate instances safely.
-2. Tighten HTTP adapter behavior against real clients.
+1. Tighten HTTP adapter behavior against real clients.
    - Add tests for HEAD responses with non-zero `Content-Length` and no body,
      matching nginx behavior.
    - Add tests for percent-encoded paths and query ordering edge cases.
-3. Broaden upstream parity checks.
-   - Compare C++ behavior against upstream `tools/s3test.py` after S3 routes
-     exist.
-   - Add route-level tests for `POST` conflict locking once POST/S3 support is
-     implemented.
+2. Broaden upstream parity checks.
+   - Compare C++ behavior against upstream `tools/s3test.py`.
+   - Add route-level tests for multipart overwrite and conflict locking under
+     concurrent clients.
+3. Improve production durability around multipart uploads.
+   - Add startup cleanup or expiry for abandoned multipart part files.
+   - Stream large multipart completion to replicas instead of concatenating the
+     full completed object in memory.
 
 ## Remaining Capability Gaps
 
 - S3 compatibility:
-  - Multipart upload init/part/complete routes are not implemented.
-- Exact upstream POST semantics:
-  - Upstream also uses `POST` for multipart init/complete; the C++ master now
-    handles `POST ?delete` but returns 400 for unsupported multipart routes.
+  - Current multipart support matches the upstream route shape but does not yet
+    expose full AWS S3 response metadata, ETags, or abort-multipart handling.
 - Operational parity:
   - The C++ adapter is synchronous and intentionally small; it is functional
     for current tests but not yet tuned like Go's `net/http` server for high

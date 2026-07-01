@@ -11,6 +11,11 @@
 #include <algorithm>
 #include <charconv>
 #include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iterator>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <sstream>
@@ -188,10 +193,55 @@ std::vector<std::string> parseS3DeleteKeys(std::string_view body) {
   return keys;
 }
 
+std::vector<int> parseS3MultipartPartNumbers(std::string_view body) {
+  auto parts = std::vector<int>{};
+  auto rest = body;
+  static constexpr auto part_open = std::string_view{"<PartNumber>"};
+  static constexpr auto part_close = std::string_view{"</PartNumber>"};
+
+  while (true) {
+    const auto open = rest.find(part_open);
+    if (open == std::string_view::npos) {
+      break;
+    }
+    rest.remove_prefix(open + part_open.size());
+    const auto close = rest.find(part_close);
+    if (close == std::string_view::npos) {
+      throw std::runtime_error("malformed S3 multipart XML");
+    }
+
+    auto part = 0;
+    const auto value = rest.substr(0, close);
+    const auto result =
+        std::from_chars(value.data(), value.data() + value.size(), part);
+    if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
+        part <= 0) {
+      throw std::runtime_error("invalid S3 multipart part number");
+    }
+
+    parts.push_back(part);
+    rest.remove_prefix(close + part_close.size());
+  }
+
+  return parts;
+}
+
+std::string generateUploadId() {
+  auto random = std::random_device{};
+  auto out = std::ostringstream{};
+  out << std::hex << std::setfill('0');
+  for (auto i = 0; i < 4; ++i) {
+    out << std::setw(8) << random();
+  }
+  return out.str();
+}
+
 } // namespace
 
 App::App(AppOptions options)
-    : options_(std::move(options)), index_(options_.db_path) {}
+    : options_(std::move(options)), index_(options_.db_path) {
+  std::filesystem::create_directories(multipartRoot());
+}
 
 bool App::lockKey(std::string_view key) {
   auto lock = std::scoped_lock{lock_mutex_};
@@ -457,6 +507,94 @@ S3DeleteResult App::s3Delete(std::string_view bucket,
   return {.status = 204};
 }
 
+MultipartUploadResult App::createMultipartUpload(std::string_view key) {
+  if (getRecord(key).deleted == record::Deleted::NO) {
+    return {.status = 403, .upload_id = "", .body = ""};
+  }
+
+  auto upload_id = std::string{};
+  {
+    auto lock = std::scoped_lock{multipart_mutex_};
+    do {
+      upload_id = generateUploadId();
+    } while (!upload_ids_.insert(upload_id).second);
+  }
+
+  const auto body = std::string{"<InitiateMultipartUploadResult>\n"
+                                "        <UploadId>"} +
+                    xmlEscape(upload_id) +
+                    "</UploadId>\n"
+                    "      </InitiateMultipartUploadResult>";
+  return {.status = 200, .upload_id = upload_id, .body = body};
+}
+
+int App::writeMultipartPart(std::string_view upload_id, int part_number,
+                            std::string_view body) {
+  if (part_number <= 0) {
+    return 403;
+  }
+
+  {
+    auto lock = std::scoped_lock{multipart_mutex_};
+    if (!upload_ids_.contains(toString(upload_id))) {
+      return 403;
+    }
+  }
+
+  std::filesystem::create_directories(multipartRoot());
+  auto file = std::ofstream{multipartPartPath(upload_id, part_number),
+                            std::ios::binary | std::ios::trunc};
+  if (!file) {
+    return 403;
+  }
+  file.write(body.data(), static_cast<std::streamsize>(body.size()));
+  return file ? 200 : 403;
+}
+
+MultipartUploadResult App::completeMultipartUpload(
+    std::string_view key, std::string_view upload_id,
+    const std::vector<int> &part_numbers) {
+  {
+    auto lock = std::scoped_lock{multipart_mutex_};
+    if (!upload_ids_.erase(toString(upload_id))) {
+      return {.status = 403, .upload_id = "", .body = ""};
+    }
+  }
+
+  auto body = std::string{};
+  for (const auto part_number : part_numbers) {
+    const auto path = multipartPartPath(upload_id, part_number);
+    auto file = std::ifstream{path, std::ios::binary};
+    if (!file) {
+      return {.status = 403, .upload_id = "", .body = ""};
+    }
+    body.append(std::istreambuf_iterator<char>{file},
+                std::istreambuf_iterator<char>{});
+    std::filesystem::remove(path);
+  }
+
+  const auto result = writeToReplicas(key, body);
+  if (result.status != 201) {
+    return {.status = result.status, .upload_id = "", .body = ""};
+  }
+
+  return {.status = result.status,
+          .upload_id = "",
+          .body = "<CompleteMultipartUploadResult></CompleteMultipartUploadResult>"};
+}
+
+std::filesystem::path App::multipartRoot() const {
+  auto path = options_.db_path;
+  path += ".multipart";
+  return path;
+}
+
+std::filesystem::path App::multipartPartPath(std::string_view upload_id,
+                                             int part_number) const {
+  return multipartRoot() /
+         (toString(upload_id) + "-" + std::to_string(part_number));
+}
+
 const AppOptions &App::options() const { return options_; }
 
 std::vector<std::size_t> replicaProbeOrder(std::size_t count) {
@@ -524,6 +662,21 @@ http::Response handleRequest(App &app, const http::Request &req) {
       return makeEmptyResponse(403);
     }
 
+    if (const auto part_number = req.getParamValue("partNumber");
+        !part_number.empty()) {
+      auto parsed_part_number = std::size_t{0};
+      if (!parseSize(part_number, parsed_part_number) ||
+          parsed_part_number == 0 ||
+          parsed_part_number >
+              static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return makeEmptyResponse(403);
+      }
+
+      return makeEmptyResponse(app.writeMultipartPart(
+          req.getParamValue("uploadId"), static_cast<int>(parsed_part_number),
+          req.body));
+    }
+
     const auto result = app.writeToReplicas(req.path, req.body);
     return makeEmptyResponse(result.status);
   }
@@ -535,10 +688,40 @@ http::Response handleRequest(App &app, const http::Request &req) {
       return makeEmptyResponse(409);
     }
 
-    if (firstQueryOperation(req) == "delete") {
+    const auto operation = firstQueryOperation(req);
+    if (operation == "uploads") {
+      const auto result = app.createMultipartUpload(req.path);
+      auto res = http::Response{.status = result.status};
+      if (!result.body.empty()) {
+        res.setContent(result.body, "application/xml");
+      } else {
+        res.setHeader("Content-Length", "0");
+      }
+      return res;
+    }
+
+    if (operation == "delete") {
       try {
         const auto keys = parseS3DeleteKeys(req.body);
         return makeEmptyResponse(app.s3Delete(req.path, keys).status);
+      } catch (const std::exception &) {
+        return makeEmptyResponse(500);
+      }
+    }
+
+    if (!req.getParamValue("uploadId").empty()) {
+      try {
+        const auto parts = parseS3MultipartPartNumbers(req.body);
+        const auto result =
+            app.completeMultipartUpload(req.path, req.getParamValue("uploadId"),
+                                        parts);
+        auto res = http::Response{.status = result.status};
+        if (!result.body.empty()) {
+          res.setContent(result.body, "application/xml");
+        } else {
+          res.setHeader("Content-Length", "0");
+        }
+        return res;
       } catch (const std::exception &) {
         return makeEmptyResponse(500);
       }

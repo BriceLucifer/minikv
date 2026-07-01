@@ -51,6 +51,21 @@ std::vector<std::string> jsonStringArray(const boost::json::value &value) {
   return out;
 }
 
+std::string xmlValue(std::string_view body, std::string_view tag) {
+  const auto open_tag = "<" + std::string{tag} + ">";
+  const auto close_tag = "</" + std::string{tag} + ">";
+  const auto open = body.find(open_tag);
+  if (open == std::string_view::npos) {
+    return "";
+  }
+  const auto value_start = open + open_tag.size();
+  const auto close = body.find(close_tag, value_start);
+  if (close == std::string_view::npos) {
+    return "";
+  }
+  return std::string{body.substr(value_start, close - value_start)};
+}
+
 class LocalVolumeServer {
 public:
   minikv::test::TestHttpServer server;
@@ -1131,6 +1146,169 @@ TEST(ServerRouteTest, S3BulkDeleteRejectsMalformedXmlWithoutDeleting) {
     EXPECT_FALSE(remote_delete_called);
     EXPECT_EQ(app.getRecord("/bucket/alpha.txt").deleted,
               minikv::record::Deleted::NO);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3MultipartUploadCombinesPartsAndWritesReplicas) {
+  auto received_body = std::string{};
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
+    received_body = req.body;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-multipart");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.md5sum = true;
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    auto multipart_path = options.db_path;
+    multipart_path += ".multipart";
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto init = client.Post("/bucket/object?uploads", "");
+
+    ASSERT_TRUE(init);
+    EXPECT_EQ(init->status, 200);
+    const auto upload_id = xmlValue(init->body, "UploadId");
+    ASSERT_FALSE(upload_id.empty());
+
+    const auto second =
+        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
+                   "world", "application/octet-stream");
+    ASSERT_TRUE(second);
+    EXPECT_EQ(second->status, 200);
+
+    const auto first =
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
+                   "hello ", "application/octet-stream");
+    ASSERT_TRUE(first);
+    EXPECT_EQ(first->status, 200);
+
+    const auto complete_xml =
+        std::string{"<CompleteMultipartUpload>"
+                    "<Part><PartNumber>1</PartNumber></Part>"
+                    "<Part><PartNumber>2</PartNumber></Part>"
+                    "</CompleteMultipartUpload>"};
+    const auto complete =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+
+    ASSERT_TRUE(complete);
+    EXPECT_EQ(complete->status, 201);
+    EXPECT_NE(complete->body.find("<CompleteMultipartUploadResult>"),
+              std::string::npos);
+    EXPECT_EQ(received_body, "hello world");
+
+    const auto rec = app.getRecord("/bucket/object");
+    EXPECT_EQ(rec.deleted, minikv::record::Deleted::NO);
+    EXPECT_EQ(rec.rvolumes, (std::vector<std::string>{volume.volume()}));
+    EXPECT_EQ(rec.hash, minikv::md5_hex("hello world"));
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3MultipartRejectsUnknownUploadIdAndMissingParts) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-multipart-invalid");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    auto multipart_path = options.db_path;
+    multipart_path += ".multipart";
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto unknown_part =
+        client.Put("/bucket/object?partNumber=1&uploadId=missing", "body",
+                   "application/octet-stream");
+    ASSERT_TRUE(unknown_part);
+    EXPECT_EQ(unknown_part->status, 403);
+
+    const auto init = client.Post("/bucket/object?uploads", "");
+    ASSERT_TRUE(init);
+    ASSERT_EQ(init->status, 200);
+    const auto upload_id = xmlValue(init->body, "UploadId");
+    ASSERT_FALSE(upload_id.empty());
+
+    const auto complete_xml =
+        std::string{"<CompleteMultipartUpload>"
+                    "<Part><PartNumber>1</PartNumber></Part>"
+                    "</CompleteMultipartUpload>"};
+    const auto missing_part =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+    ASSERT_TRUE(missing_part);
+    EXPECT_EQ(missing_part->status, 403);
+    EXPECT_FALSE(remote_put_called);
+    EXPECT_EQ(app.getRecord("/bucket/object").deleted,
+              minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3MultipartInitRejectsExistingLiveObject) {
+  const auto options = appOptions("route-s3-multipart-existing");
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    auto multipart_path = options.db_path;
+    multipart_path += ".multipart";
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/object",
+        minikv::record::Record{
+            .rvolumes = {"volume-a"},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "",
+        }));
+
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto init = client.Post("/bucket/object?uploads", "");
+
+    ASSERT_TRUE(init);
+    EXPECT_EQ(init->status, 403);
+    EXPECT_TRUE(init->body.empty());
   }
 
   cleanup();

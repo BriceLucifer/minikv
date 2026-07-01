@@ -60,6 +60,12 @@ struct S3DeleteResult {
   int status;
 };
 
+struct MultipartUploadResult {
+  int status;
+  std::string upload_id;
+  std::string body;
+};
+
 class App {
  public:
   explicit App(AppOptions options);
@@ -80,14 +86,26 @@ class App {
   QueryResult s3List(std::string_view bucket, std::string_view prefix) const;
   S3DeleteResult s3Delete(std::string_view bucket,
                           const std::vector<std::string> &keys);
+  MultipartUploadResult createMultipartUpload(std::string_view key);
+  int writeMultipartPart(std::string_view upload_id, int part_number,
+                         std::string_view body);
+  MultipartUploadResult completeMultipartUpload(
+      std::string_view key, std::string_view upload_id,
+      const std::vector<int> &part_numbers);
 
   const AppOptions &options() const;
 
  private:
+  std::filesystem::path multipartRoot() const;
+  std::filesystem::path multipartPartPath(std::string_view upload_id,
+                                          int part_number) const;
+
   AppOptions options_;
   index::LevelDbIndex index_;
   mutable std::mutex lock_mutex_;
   std::unordered_set<std::string> locks_;
+  mutable std::mutex multipart_mutex_;
+  std::unordered_set<std::string> upload_ids_;
 };
 
 http::Response handleRequest(App &app, const http::Request &request);
