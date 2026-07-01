@@ -32,11 +32,13 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     delete for bucket child keys.
   - S3-compatible multipart upload routes: `POST ?uploads`, `PUT
     ?partNumber=&uploadId=`, and `POST ?uploadId=`.
+  - Multipart scratch cleanup on startup and retryable completion when a part
+    is missing.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `75/75 tests passed`
+  - `ctest --preset debug` with `77/77 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -73,6 +75,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   nginx/WebDAV volumes.
 - S3-compatible multipart upload with per-DB namespaced temporary part files
   and nginx/WebDAV smoke coverage.
+- Multipart startup cleanup removes stale scratch files left by previous
+  processes, and failed completion due to missing parts keeps the upload id
+  usable for retry.
 - Master executable entry point with Go-style server flags.
 - CMake presets use Ninja and 24-way parallel build jobs on this machine.
 
@@ -87,7 +92,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
    - Add route-level tests for multipart overwrite and conflict locking under
      concurrent clients.
 3. Improve production durability around multipart uploads.
-   - Add startup cleanup or expiry for abandoned multipart part files.
+   - Add time-based expiry for abandoned multipart uploads in a running
+     process.
    - Stream large multipart completion to replicas instead of concatenating the
      full completed object in memory.
 

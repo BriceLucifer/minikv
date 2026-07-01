@@ -240,6 +240,7 @@ std::string generateUploadId() {
 
 App::App(AppOptions options)
     : options_(std::move(options)), index_(options_.db_path) {
+  std::filesystem::remove_all(multipartRoot());
   std::filesystem::create_directories(multipartRoot());
 }
 
@@ -556,7 +557,13 @@ MultipartUploadResult App::completeMultipartUpload(
     const std::vector<int> &part_numbers) {
   {
     auto lock = std::scoped_lock{multipart_mutex_};
-    if (!upload_ids_.erase(toString(upload_id))) {
+    if (!upload_ids_.contains(toString(upload_id))) {
+      return {.status = 403, .upload_id = "", .body = ""};
+    }
+  }
+
+  for (const auto part_number : part_numbers) {
+    if (!std::filesystem::exists(multipartPartPath(upload_id, part_number))) {
       return {.status = 403, .upload_id = "", .body = ""};
     }
   }
@@ -570,12 +577,20 @@ MultipartUploadResult App::completeMultipartUpload(
     }
     body.append(std::istreambuf_iterator<char>{file},
                 std::istreambuf_iterator<char>{});
-    std::filesystem::remove(path);
   }
 
   const auto result = writeToReplicas(key, body);
   if (result.status != 201) {
     return {.status = result.status, .upload_id = "", .body = ""};
+  }
+
+  for (const auto part_number : part_numbers) {
+    std::filesystem::remove(multipartPartPath(upload_id, part_number));
+  }
+
+  {
+    auto lock = std::scoped_lock{multipart_mutex_};
+    upload_ids_.erase(toString(upload_id));
   }
 
   return {.status = result.status,

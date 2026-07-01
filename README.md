@@ -213,7 +213,9 @@ curl -X POST -H 'Content-Type: application/xml' \
 
 Multipart part files are stored under a path derived from the LevelDB path
 instead of global `/tmp`, so multiple deployments do not share upload scratch
-space by accident.
+space by accident. Stale multipart scratch files from a previous process are
+removed on startup, and a completion request that references a missing part
+keeps the upload id valid so the client can upload the missing part and retry.
 
 ## Release Build
 

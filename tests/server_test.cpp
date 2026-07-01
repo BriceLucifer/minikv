@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -1280,6 +1281,76 @@ TEST(ServerRouteTest, S3MultipartRejectsUnknownUploadIdAndMissingParts) {
   cleanup();
 }
 
+TEST(ServerRouteTest, S3MultipartMissingPartCanBeUploadedAndRetried) {
+  auto received_body = std::string{};
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
+    received_body = req.body;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-multipart-retry-missing");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    auto multipart_path = options.db_path;
+    multipart_path += ".multipart";
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto init = client.Post("/bucket/object?uploads", "");
+    ASSERT_TRUE(init);
+    ASSERT_EQ(init->status, 200);
+    const auto upload_id = xmlValue(init->body, "UploadId");
+    ASSERT_FALSE(upload_id.empty());
+
+    const auto first =
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
+                   "hello ", "application/octet-stream");
+    ASSERT_TRUE(first);
+    ASSERT_EQ(first->status, 200);
+
+    const auto complete_xml =
+        std::string{"<CompleteMultipartUpload>"
+                    "<Part><PartNumber>1</PartNumber></Part>"
+                    "<Part><PartNumber>2</PartNumber></Part>"
+                    "</CompleteMultipartUpload>"};
+    const auto missing_part =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+    ASSERT_TRUE(missing_part);
+    EXPECT_EQ(missing_part->status, 403);
+    EXPECT_TRUE(received_body.empty());
+
+    const auto second =
+        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
+                   "world", "application/octet-stream");
+    ASSERT_TRUE(second);
+    EXPECT_EQ(second->status, 200);
+
+    const auto retry =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+    ASSERT_TRUE(retry);
+    EXPECT_EQ(retry->status, 201);
+    EXPECT_EQ(received_body, "hello world");
+    EXPECT_EQ(app.getRecord("/bucket/object").deleted,
+              minikv::record::Deleted::NO);
+  }
+
+  cleanup();
+}
+
 TEST(ServerRouteTest, S3MultipartInitRejectsExistingLiveObject) {
   const auto options = appOptions("route-s3-multipart-existing");
   const auto cleanup = [&] {
@@ -1309,6 +1380,32 @@ TEST(ServerRouteTest, S3MultipartInitRejectsExistingLiveObject) {
     ASSERT_TRUE(init);
     EXPECT_EQ(init->status, 403);
     EXPECT_TRUE(init->body.empty());
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, MultipartScratchDirectoryIsCleanedAtStartup) {
+  auto options = appOptions("multipart-startup-cleanup");
+  auto multipart_path = options.db_path;
+  multipart_path += ".multipart";
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  std::filesystem::create_directories(multipart_path);
+  const auto stale_part = multipart_path / "stale-upload-1";
+  {
+    auto file = std::ofstream{stale_part};
+    file << "stale";
+  }
+  ASSERT_TRUE(std::filesystem::exists(stale_part));
+
+  {
+    minikv::server::App app{options};
+    EXPECT_TRUE(std::filesystem::exists(multipart_path));
+    EXPECT_FALSE(std::filesystem::exists(stale_part));
   }
 
   cleanup();
