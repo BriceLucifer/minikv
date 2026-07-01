@@ -139,6 +139,8 @@ TEST(ServerAppTest, StoresOptions) {
     EXPECT_EQ(app.options().protect, options.protect);
     EXPECT_EQ(app.options().md5sum, options.md5sum);
     EXPECT_EQ(app.options().volume_timeout, options.volume_timeout);
+    EXPECT_EQ(app.options().multipart_upload_ttl,
+              options.multipart_upload_ttl);
   }
 
   cleanup();
@@ -668,6 +670,43 @@ TEST(ServerRouteTest, PutRouteRejectsOverwriteOfLiveRecord) {
   cleanup();
 }
 
+TEST(ServerRouteTest, PutRouteDecodesAwsChunkedPayloads) {
+  auto remote_body = std::string{};
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
+                                  minikv::http::Response &res) {
+    remote_body = req.body;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-put-aws-chunked");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    auto req = minikv::http::Request{};
+    req.method = "PUT";
+    req.target = "/bucket/chunked";
+    req.path = "/bucket/chunked";
+    req.headers["content-encoding"] = "aws-chunked";
+    req.body =
+        "6;chunk-signature=abc\r\nhello1\r\n0;chunk-signature=def\r\n\r\n";
+
+    const auto res = minikv::server::handleRequest(app, req);
+
+    EXPECT_EQ(res.status, 201);
+    EXPECT_EQ(remote_body, "hello1");
+    EXPECT_EQ(res.headers.at("ETag"), "\"203ad5ffa1d7c650ad681fdff3965cd2\"");
+  }
+
+  cleanup();
+}
+
 TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
   auto remote_put_called = false;
   auto remote_delete_called = false;
@@ -736,6 +775,8 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
   volume.server.Get(R"(/.*)", [](const minikv::http::Request &,
                                  minikv::http::Response &res) {
     res.status = 200;
+    res.setHeader("Content-Length", "5");
+    res.setHeader("ETag", "\"hello-etag\"");
   });
   volume.start();
 
@@ -774,8 +815,10 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
 
     const auto head_res = client.Head("/hello");
     ASSERT_TRUE(head_res);
-    EXPECT_EQ(head_res->status, 302);
-    EXPECT_EQ(head_res->get_header_value("Location"), expected_location);
+    EXPECT_EQ(head_res->status, 200);
+    EXPECT_EQ(head_res->get_header_value("Content-Length"), "5");
+    EXPECT_EQ(head_res->get_header_value("ETag"), "\"hello-etag\"");
+    EXPECT_EQ(head_res->get_header_value("Location"), "");
     EXPECT_EQ(head_res->get_header_value("Content-Md5"),
               "321c3cf486ed509164edec1e1981fec8");
     EXPECT_EQ(head_res->get_header_value("Key-Volumes"), volume.volume());
@@ -1513,6 +1556,76 @@ TEST(ServerRouteTest, S3MultipartAbortRemovesPartsWithoutDeletingObject) {
     EXPECT_EQ(live_after_rejects.rvolumes,
               (std::vector<std::string>{volume.volume()}));
     EXPECT_EQ(live_after_rejects.hash, "5d41402abc4b2a76b9719d911017c592");
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3MultipartExpiredUploadRemovesPartsAndRejectsRetry) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-multipart-expire");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.multipart_upload_ttl = std::chrono::milliseconds{10};
+  auto multipart_path = options.db_path;
+  multipart_path += ".multipart";
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto init = client.Post("/bucket/object?uploads", "");
+    ASSERT_TRUE(init);
+    ASSERT_EQ(init->status, 200);
+    const auto upload_id = xmlValue(init->body, "UploadId");
+    ASSERT_FALSE(upload_id.empty());
+
+    const auto first =
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
+                   "stale", "application/octet-stream");
+    ASSERT_TRUE(first);
+    ASSERT_EQ(first->status, 200);
+
+    const auto part_one = multipart_path / (upload_id + "-1");
+    ASSERT_TRUE(std::filesystem::exists(part_one));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{30});
+
+    const auto second =
+        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
+                   "too late", "application/octet-stream");
+    ASSERT_TRUE(second);
+    EXPECT_EQ(second->status, 403);
+    EXPECT_FALSE(std::filesystem::exists(part_one));
+
+    const auto complete_xml =
+        std::string{"<CompleteMultipartUpload>"
+                    "<Part><PartNumber>1</PartNumber></Part>"
+                    "</CompleteMultipartUpload>"};
+    const auto complete =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+    ASSERT_TRUE(complete);
+    EXPECT_EQ(complete->status, 403);
+    EXPECT_FALSE(remote_put_called);
+    EXPECT_EQ(app.getRecord("/bucket/object").deleted,
+              minikv::record::Deleted::HARD);
   }
 
   cleanup();

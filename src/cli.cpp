@@ -53,7 +53,7 @@ std::vector<std::string> splitCommaSeparated(std::string_view value) {
 
 bool parseDuration(std::string_view value, std::chrono::milliseconds &out) {
   // Cover the duration forms used by the original flags in practice: plain
-  // milliseconds, "ms", "s", and "m".
+  // milliseconds, "ms", "s", "m", and "h".
   auto multiplier = 1;
   if (value.ends_with("ms")) {
     value.remove_suffix(2);
@@ -64,6 +64,9 @@ bool parseDuration(std::string_view value, std::chrono::milliseconds &out) {
   } else if (value.ends_with('m')) {
     value.remove_suffix(1);
     multiplier = 60 * 1000;
+  } else if (value.ends_with('h')) {
+    value.remove_suffix(1);
+    multiplier = 60 * 60 * 1000;
   }
 
   auto amount = 0;
@@ -82,6 +85,8 @@ std::string usage() {
          "        Path to leveldb\n"
          "  -fallback string\n"
          "        Fallback server for missing keys\n"
+         "  -multipartttl duration\n"
+         "        TTL for abandoned multipart uploads (default 24h)\n"
          "  -port int\n"
          "        Port for the server to listen on (default 3000)\n"
          "  -protect\n"
@@ -162,6 +167,13 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
       if (!result.error.empty() ||
           !parseDuration(value, result.options.app.volume_timeout)) {
         result.error = "invalid -voltimeout";
+        return result;
+      }
+    } else if (arg == "-multipartttl") {
+      const auto value = nextValue(arg);
+      if (!result.error.empty() ||
+          !parseDuration(value, result.options.app.multipart_upload_ttl)) {
+        result.error = "invalid -multipartttl";
         return result;
       }
     } else if (arg.starts_with('-')) {

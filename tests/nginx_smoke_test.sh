@@ -174,8 +174,15 @@ fi
 
 head_status=$(curl -sS -o /dev/null -w "%{http_code}" \
   -I "http://127.0.0.1:$MASTER_PORT/hello")
-if [[ "$head_status" != "302" ]]; then
+if [[ "$head_status" != "200" ]]; then
   echo "HEAD returned $head_status" >&2
+  exit 1
+fi
+curl -sS -D "$HEADERS" -o /dev/null \
+  -I "http://127.0.0.1:$MASTER_PORT/hello"
+if ! grep -qi '^Content-Length: 22' "$HEADERS"; then
+  echo "HEAD response did not include object Content-Length" >&2
+  cat "$HEADERS" >&2
   exit 1
 fi
 

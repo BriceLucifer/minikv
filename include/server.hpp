@@ -11,6 +11,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -25,6 +26,7 @@ struct AppOptions {
   bool protect = false;
   bool md5sum = true;
   std::chrono::milliseconds volume_timeout{1000};
+  std::chrono::milliseconds multipart_upload_ttl{std::chrono::hours{24}};
 };
 
 struct WriteResult {
@@ -101,13 +103,17 @@ class App {
   std::filesystem::path multipartRoot() const;
   std::filesystem::path multipartPartPath(std::string_view upload_id,
                                           int part_number) const;
+  void removeMultipartPartsLocked(std::string_view upload_id);
+  void cleanupExpiredMultipartUploadsLocked(
+      std::chrono::steady_clock::time_point now);
 
   AppOptions options_;
   index::LevelDbIndex index_;
   mutable std::mutex lock_mutex_;
   std::unordered_set<std::string> locks_;
   mutable std::mutex multipart_mutex_;
-  std::unordered_set<std::string> upload_ids_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+      upload_ids_;
 };
 
 http::Response handleRequest(App &app, const http::Request &request);

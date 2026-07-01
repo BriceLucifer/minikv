@@ -3,6 +3,14 @@ set -euo pipefail
 
 MKV_BIN=${1:?mkv binary path required}
 PY_TEST=${2:?s3 compatibility python test path required}
+PYTHON_BIN=${MINIKV_PYTHON:-}
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="$(cd "$(dirname "$PY_TEST")/.." && pwd)/.venv/bin/python3"
+  if [[ ! -x "$PYTHON_BIN" ]]; then
+    PYTHON_BIN=python3
+  fi
+fi
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -12,7 +20,7 @@ require_command() {
 }
 
 free_port() {
-  python3 - "$@" <<'PY'
+  "$PYTHON_BIN" - "$@" <<'PY'
 import socket
 import sys
 
@@ -47,15 +55,15 @@ wait_http_status() {
 
 require_command nginx
 require_command curl
-require_command python3
+require_command "$PYTHON_BIN"
 
-python3 "$PY_TEST" --check-deps
+"$PYTHON_BIN" "$PY_TEST" --check-deps
 if [[ "${MINIKV_REQUIRE_S3_COMPAT_DEPS:-}" == "1" ]]; then
-  python3 "$PY_TEST" --require-deps
+  "$PYTHON_BIN" "$PY_TEST" --require-deps
 fi
 
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/minikv-s3-compat.XXXXXX")
-VOLUME_ROOT="$ROOT/volume"
+VOLUME_ROOT="$ROOT/volumes"
 NGINX_PREFIX="$ROOT/nginx-prefix"
 DB_PATH="$ROOT/indexdb"
 CONF="$ROOT/nginx.conf"
@@ -64,10 +72,31 @@ NGINX_LOG="$ROOT/nginx.log"
 
 mkdir -p "$VOLUME_ROOT" "$NGINX_PREFIX"
 
-VOLUME_PORT=$(free_port)
-MASTER_PORT=$(free_port "$VOLUME_PORT")
+VOLUME_PORTS=()
+USED_PORTS=()
+for _ in $(seq 1 5); do
+  port=$(free_port "${USED_PORTS[@]}")
+  VOLUME_PORTS+=("$port")
+  USED_PORTS+=("$port")
+done
+MASTER_PORT=$(free_port "${USED_PORTS[@]}")
 
 cleanup() {
+  local status=$?
+  if [[ "$status" -ne 0 ]]; then
+    echo "--- mkv master log ---" >&2
+    if [[ -f "$MASTER_LOG" ]]; then
+      cat "$MASTER_LOG" >&2
+    else
+      echo "missing $MASTER_LOG" >&2
+    fi
+    echo "--- nginx log ---" >&2
+    if [[ -f "$NGINX_LOG" ]]; then
+      cat "$NGINX_LOG" >&2
+    else
+      echo "missing $NGINX_LOG" >&2
+    fi
+  fi
   if [[ -n "${MASTER_PID:-}" ]]; then
     kill "$MASTER_PID" >/dev/null 2>&1 || true
     wait "$MASTER_PID" >/dev/null 2>&1 || true
@@ -94,13 +123,19 @@ http {
   default_type application/octet-stream;
   access_log off;
   sendfile on;
+EOF
 
+for index in "${!VOLUME_PORTS[@]}"; do
+  volume_dir="$VOLUME_ROOT/volume$((index + 1))"
+  body_temp="$ROOT/body_temp$((index + 1))"
+  mkdir -p "$volume_dir" "$body_temp"
+  cat >>"$CONF" <<EOF
   server {
-    listen 127.0.0.1:$VOLUME_PORT;
+    listen 127.0.0.1:${VOLUME_PORTS[$index]};
 
     location / {
-      root $VOLUME_ROOT;
-      client_body_temp_path $ROOT/body_temp;
+      root $volume_dir;
+      client_body_temp_path $body_temp;
       client_max_body_size 0;
       dav_methods PUT DELETE;
       dav_access group:rw all:r;
@@ -109,23 +144,41 @@ http {
       autoindex_format json;
     }
   }
+EOF
+done
+
+cat >>"$CONF" <<EOF
 }
 EOF
 
 nginx -c "$CONF" -p "$NGINX_PREFIX" &
 NGINX_PID=$!
-wait_http_status "http://127.0.0.1:$VOLUME_PORT/" "200"
+for port in "${VOLUME_PORTS[@]}"; do
+  wait_http_status "http://127.0.0.1:$port/" "200"
+done
+
+VOLUMES=""
+for port in "${VOLUME_PORTS[@]}"; do
+  if [[ -n "$VOLUMES" ]]; then
+    VOLUMES+=","
+  fi
+  VOLUMES+="127.0.0.1:$port"
+done
 
 "$MKV_BIN" \
-  -volumes "127.0.0.1:$VOLUME_PORT" \
+  -volumes "$VOLUMES" \
   -db "$DB_PATH" \
-  -replicas 1 \
-  -subvolumes 1 \
+  -replicas 3 \
+  -subvolumes 10 \
   -port "$MASTER_PORT" \
   server >"$MASTER_LOG" 2>&1 &
 MASTER_PID=$!
 wait_http_status "http://127.0.0.1:$MASTER_PORT/__missing__" "404"
 
+if [[ "${MINIKV_REQUIRE_S3_COMPAT_DEPS:-}" == "1" ]]; then
+  export MINIKV_RUN_LARGE_S3_COMPAT="${MINIKV_RUN_LARGE_S3_COMPAT:-1}"
+fi
+
 MINIKV_S3_ENDPOINT="http://127.0.0.1:$MASTER_PORT" \
   AWS_EC2_METADATA_DISABLED=true \
-  python3 "$PY_TEST"
+  "$PYTHON_BIN" "$PY_TEST"

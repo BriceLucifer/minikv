@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -74,6 +75,79 @@ std::string quotedEtag(std::string_view body) {
   return "\"" + md5_hex(body) + "\"";
 }
 
+bool containsCaseInsensitive(std::string_view haystack, std::string_view needle) {
+  const auto it = std::search(
+      haystack.begin(), haystack.end(), needle.begin(), needle.end(),
+      [](char left, char right) {
+        return std::tolower(static_cast<unsigned char>(left)) ==
+               std::tolower(static_cast<unsigned char>(right));
+      });
+  return it != haystack.end();
+}
+
+std::string requestHeader(const http::Request &req, std::string_view name) {
+  const auto it = req.headers.find(toString(name));
+  if (it == req.headers.end()) {
+    return "";
+  }
+  return it->second;
+}
+
+bool isAwsChunkedPayload(const http::Request &req) {
+  const auto content_encoding = requestHeader(req, "content-encoding");
+  if (containsCaseInsensitive(content_encoding, "aws-chunked")) {
+    return true;
+  }
+
+  const auto payload_hash = requestHeader(req, "x-amz-content-sha256");
+  return containsCaseInsensitive(payload_hash, "STREAMING-");
+}
+
+std::string decodeAwsChunkedPayload(std::string_view body) {
+  auto out = std::string{};
+  auto offset = std::size_t{0};
+
+  while (offset < body.size()) {
+    const auto line_end = body.find("\r\n", offset);
+    if (line_end == std::string_view::npos) {
+      throw std::runtime_error("malformed aws-chunked payload");
+    }
+
+    const auto header = body.substr(offset, line_end - offset);
+    const auto extension = header.find(';');
+    const auto size_text = header.substr(0, extension);
+    auto chunk_size = std::size_t{0};
+    const auto *begin = size_text.data();
+    const auto *end = begin + size_text.size();
+    const auto parsed =
+        std::from_chars(begin, end, chunk_size, 16);
+    if (parsed.ec != std::errc{} || parsed.ptr != end) {
+      throw std::runtime_error("invalid aws-chunked size");
+    }
+
+    offset = line_end + 2;
+    if (chunk_size == 0) {
+      return out;
+    }
+    if (offset + chunk_size + 2 > body.size() ||
+        body.substr(offset + chunk_size, 2) != "\r\n") {
+      throw std::runtime_error("truncated aws-chunked payload");
+    }
+
+    out.append(body.substr(offset, chunk_size));
+    offset += chunk_size + 2;
+  }
+
+  throw std::runtime_error("missing aws-chunked terminator");
+}
+
+std::string requestBodyForStorage(const http::Request &req) {
+  if (!isAwsChunkedPayload(req)) {
+    return req.body;
+  }
+  return decodeAwsChunkedPayload(req.body);
+}
+
 struct ObjectMetadata {
   std::string size;
   std::string etag;
@@ -119,6 +193,40 @@ http::Response applyReadResult(const ReadResult &result) {
   if (!result.redirect_url.empty()) {
     res.setHeader("Location", result.redirect_url);
   }
+  return res;
+}
+
+http::Response applyHeadMetadata(App &app, std::string_view key) {
+  const auto rec = app.getRecord(key);
+  if (rec.deleted != record::Deleted::NO) {
+    return applyReadResult(app.readFromReplica(key));
+  }
+
+  const auto metadata =
+      objectMetadataFromReplicas(rec, key, app.options().volume_timeout);
+  if (metadata.size.empty()) {
+    return makeEmptyResponse(404);
+  }
+
+  auto res = http::Response{.status = 200};
+  res.setHeader("Content-Length", metadata.size);
+  if (!metadata.etag.empty()) {
+    res.setHeader("ETag", metadata.etag);
+  }
+  if (!rec.hash.empty()) {
+    res.setHeader("Content-Md5", rec.hash);
+  }
+  if (!rec.rvolumes.empty()) {
+    res.setHeader("Key-Volumes", joinVolumes(rec.rvolumes));
+  }
+
+  const auto preferred =
+      placement::key2volume(key, app.options().volumes, app.options().replicas,
+                            app.options().subvolumes);
+  res.setHeader("Key-Balance",
+                placement::needs_rebalance(rec.rvolumes, preferred)
+                    ? "unbalanced"
+                    : "balanced");
   return res;
 }
 
@@ -556,9 +664,11 @@ MultipartUploadResult App::createMultipartUpload(std::string_view key) {
   auto upload_id = std::string{};
   {
     auto lock = std::scoped_lock{multipart_mutex_};
+    cleanupExpiredMultipartUploadsLocked(std::chrono::steady_clock::now());
     do {
       upload_id = generateUploadId();
-    } while (!upload_ids_.insert(upload_id).second);
+    } while (upload_ids_.contains(upload_id));
+    upload_ids_[upload_id] = std::chrono::steady_clock::now();
   }
 
   const auto body = std::string{"<InitiateMultipartUploadResult>\n"
@@ -576,7 +686,10 @@ int App::writeMultipartPart(std::string_view upload_id, int part_number,
   }
 
   auto lock = std::scoped_lock{multipart_mutex_};
-  if (!upload_ids_.contains(toString(upload_id))) {
+  cleanupExpiredMultipartUploadsLocked(std::chrono::steady_clock::now());
+  const auto upload = toString(upload_id);
+  const auto found = upload_ids_.find(upload);
+  if (found == upload_ids_.end()) {
     return 403;
   }
 
@@ -587,30 +700,19 @@ int App::writeMultipartPart(std::string_view upload_id, int part_number,
     return 403;
   }
   file.write(body.data(), static_cast<std::streamsize>(body.size()));
+  found->second = std::chrono::steady_clock::now();
   return file ? 200 : 403;
 }
 
 int App::abortMultipartUpload(std::string_view upload_id) {
   auto lock = std::scoped_lock{multipart_mutex_};
+  cleanupExpiredMultipartUploadsLocked(std::chrono::steady_clock::now());
   const auto upload = toString(upload_id);
   if (!upload_ids_.erase(upload)) {
     return 404;
   }
 
-  const auto root = multipartRoot();
-  if (std::filesystem::exists(root)) {
-    const auto prefix = upload + "-";
-    for (const auto &entry : std::filesystem::directory_iterator{root}) {
-      if (!entry.is_regular_file()) {
-        continue;
-      }
-      const auto name = entry.path().filename().string();
-      if (name.starts_with(prefix)) {
-        std::filesystem::remove(entry.path());
-      }
-    }
-  }
-
+  removeMultipartPartsLocked(upload);
   return 204;
 }
 
@@ -623,6 +725,7 @@ MultipartUploadResult App::completeMultipartUpload(
 
   {
     auto lock = std::scoped_lock{multipart_mutex_};
+    cleanupExpiredMultipartUploadsLocked(std::chrono::steady_clock::now());
     if (!upload_ids_.contains(toString(upload_id))) {
       return {.status = 403, .upload_id = "", .etag = "", .body = ""};
     }
@@ -657,6 +760,7 @@ MultipartUploadResult App::completeMultipartUpload(
 
   {
     auto lock = std::scoped_lock{multipart_mutex_};
+    cleanupExpiredMultipartUploadsLocked(std::chrono::steady_clock::now());
     upload_ids_.erase(toString(upload_id));
   }
 
@@ -679,6 +783,41 @@ std::filesystem::path App::multipartPartPath(std::string_view upload_id,
          (toString(upload_id) + "-" + std::to_string(part_number));
 }
 
+void App::removeMultipartPartsLocked(std::string_view upload_id) {
+  const auto root = multipartRoot();
+  if (!std::filesystem::exists(root)) {
+    return;
+  }
+
+  const auto prefix = toString(upload_id) + "-";
+  for (const auto &entry : std::filesystem::directory_iterator{root}) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    const auto name = entry.path().filename().string();
+    if (name.starts_with(prefix)) {
+      std::filesystem::remove(entry.path());
+    }
+  }
+}
+
+void App::cleanupExpiredMultipartUploadsLocked(
+    std::chrono::steady_clock::time_point now) {
+  if (options_.multipart_upload_ttl <= std::chrono::milliseconds{0}) {
+    return;
+  }
+
+  for (auto it = upload_ids_.begin(); it != upload_ids_.end();) {
+    if (now - it->second < options_.multipart_upload_ttl) {
+      ++it;
+      continue;
+    }
+
+    removeMultipartPartsLocked(it->first);
+    it = upload_ids_.erase(it);
+  }
+}
+
 const AppOptions &App::options() const { return options_; }
 
 std::vector<std::size_t> replicaProbeOrder(std::size_t count) {
@@ -699,7 +838,7 @@ std::vector<std::size_t> replicaProbeOrder(std::size_t count,
 
 http::Response handleRequest(App &app, const http::Request &req) {
   if (req.method == "HEAD") {
-    return applyReadResult(app.readFromReplica(req.path));
+    return applyHeadMetadata(app, req.path);
   }
 
   if (req.method == "GET") {
@@ -738,7 +877,14 @@ http::Response handleRequest(App &app, const http::Request &req) {
       return makeEmptyResponse(409);
     }
 
-    if (req.body.empty()) {
+    auto body = std::string{};
+    try {
+      body = requestBodyForStorage(req);
+    } catch (const std::exception &) {
+      return makeEmptyResponse(400);
+    }
+
+    if (body.empty()) {
       return makeEmptyResponse(411);
     }
 
@@ -758,17 +904,17 @@ http::Response handleRequest(App &app, const http::Request &req) {
 
       auto res = makeEmptyResponse(app.writeMultipartPart(
           req.getParamValue("uploadId"), static_cast<int>(parsed_part_number),
-          req.body));
+          body));
       if (res.status == 200) {
-        res.setHeader("ETag", quotedEtag(req.body));
+        res.setHeader("ETag", quotedEtag(body));
       }
       return res;
     }
 
-    const auto result = app.writeToReplicas(req.path, req.body);
+    const auto result = app.writeToReplicas(req.path, body);
     auto res = makeEmptyResponse(result.status);
     if (result.status == 201) {
-      res.setHeader("ETag", quotedEtag(req.body));
+      res.setHeader("ETag", quotedEtag(body));
     }
     return res;
   }

@@ -15,9 +15,15 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     dependency status before running client tests.
   - `MINIKV_REQUIRE_S3_COMPAT_DEPS=1` can force the S3 compatibility harness
     to fail when boto3/PyArrow are missing instead of silently skipping them.
+    Strict mode also enables the large multipart parquet roundtrip by default.
+  - boto3/PyArrow are installed in the local `.venv` with `uv`, and strict
+    `S3CompatTest` now passes against the five-volume deploy topology.
+  - S3 `HEAD` returns direct object metadata for real S3 clients, and AWS SDK
+    `aws-chunked` streaming payloads are decoded before replica writes.
   - Go-style CLI parsing and `mkv server` executable entry point.
-  - GET/HEAD behavior closer to Go: fallback redirects, `Content-Md5`,
-    `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing.
+  - GET behavior closer to Go: fallback redirects, `Content-Md5`,
+    `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing. HEAD now
+    returns direct object metadata for S3 client compatibility.
   - PUT route parity for empty bodies, overwrite rejection, and mutating-route
     key locking.
   - Query/list JSON responses for `?list` and `?unlinked`.
@@ -49,6 +55,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     object.
   - Multipart scratch cleanup on startup and retryable completion when a part
     is missing.
+  - Runtime multipart upload TTL cleanup removes abandoned part files and
+    rejects expired upload ids; `-multipartttl` configures the window.
   - HTTP adapter edge coverage for HEAD responses with non-zero
     `Content-Length`, percent-decoded paths/query strings, duplicate query
     keys, malformed percent escapes, stalled response timeouts, and custom
@@ -56,10 +64,14 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
-  - `python3 tests/s3_compat_test.py` with `7/7 tests skipped` because boto3
-    and PyArrow are not installed on this machine.
+  - `UV_CACHE_DIR=/home/brice/minikv/.cache/uv /home/brice/.local/bin/uv pip
+    install boto3 pyarrow`
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `88/88 tests passed`
+  - `./build/debug/tests/mkv_tests --gtest_filter='HttpAdapterTest.AcceptsLargeRequestBodies:ServerRouteTest.GetAndHeadRoutesReturnRedirectLocation:ServerRouteTest.PutRouteDecodesAwsChunkedPayloads:ServerRouteTest.S3Multipart*:CliTest.*:ServerAppTest.StoresOptions'`
+  - `MINIKV_REQUIRE_S3_COMPAT_DEPS=1 ctest --preset debug -R S3CompatTest
+    --output-on-failure` passed with boto3, PyArrow, and the large multipart
+    parquet roundtrip.
+  - `ctest --preset debug` with `91/91 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -93,8 +105,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - nginx/WebDAV end-to-end CTest smoke test, including rebuild recovery and
   rebalance migration.
 - S3 compatibility CTest wrapper starts temporary nginx volumes and a C++
-  master, then runs upstream-style boto3/PyArrow Python tests when those
-  optional dependencies are installed.
+  master in a five-volume, three-replica deploy topology, then runs
+  upstream-style boto3/PyArrow Python tests when those optional dependencies
+  are installed.
 - README documents how to run `S3CompatTest`, why missing boto3/PyArrow suites
   are skipped, how to require those dependencies, and how to enable the larger
   multipart parquet roundtrip.
@@ -109,11 +122,17 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   XML also includes the final object ETag.
 - S3-compatible abort multipart upload removes staged part files, invalidates
   the upload id, and leaves object metadata/remote replicas untouched.
+- S3-compatible `HEAD` returns direct object metadata from volume replicas so
+  PyArrow `get_file_info` sees real object size and ETag.
+- AWS SDK `aws-chunked` streaming payloads are decoded before normal and
+  multipart S3 PUT bodies are written to replicas.
 - Multipart route tests cover completion-time overwrite rejection and lock
   conflicts for init, part upload, abort, and completion.
 - Multipart startup cleanup removes stale scratch files left by previous
   processes, and failed completion due to missing parts keeps the upload id
   usable for retry.
+- Runtime multipart TTL cleanup removes abandoned scratch parts during normal
+  request handling; the TTL is configurable with `-multipartttl`.
 - HTTP adapter tests cover nginx-style HEAD responses with non-zero
   `Content-Length`, percent decoding for path/query parameters, duplicate
   query keys, malformed percent escapes, stalled response timeouts, and custom
@@ -124,11 +143,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 ## Next
 
 1. Broaden upstream parity checks.
-   - Install boto3/PyArrow in the verification environment and run
-     `S3CompatTest` without dependency skips.
+   - Compare the local harness against upstream `tools/s3test.py` whenever
+     upstream changes.
 2. Improve production durability around multipart uploads.
-   - Add time-based expiry for abandoned multipart uploads in a running
-     process.
    - Stream large multipart completion to replicas instead of concatenating the
      full completed object in memory.
 

@@ -38,6 +38,7 @@ TEST(CliTest, ParsesServerCommandAndGoStyleDefaults) {
   EXPECT_FALSE(result.options.app.protect);
   EXPECT_TRUE(result.options.app.md5sum);
   EXPECT_EQ(result.options.app.volume_timeout, std::chrono::seconds{1});
+  EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{24});
 }
 
 TEST(CliTest, ParsesConfiguredFlags) {
@@ -58,6 +59,8 @@ TEST(CliTest, ParsesConfiguredFlags) {
       "-md5sum=false",
       "-voltimeout",
       "250ms",
+      "-multipartttl",
+      "2h",
       "-v",
       "server",
   });
@@ -72,6 +75,7 @@ TEST(CliTest, ParsesConfiguredFlags) {
   EXPECT_TRUE(result.options.app.protect);
   EXPECT_FALSE(result.options.app.md5sum);
   EXPECT_EQ(result.options.app.volume_timeout, std::chrono::milliseconds{250});
+  EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{2});
   EXPECT_TRUE(result.options.verbose);
 }
 

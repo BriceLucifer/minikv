@@ -8,6 +8,7 @@
 #include <cctype>
 #include <chrono>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -345,8 +346,10 @@ private:
   void handleSession(tcp::socket socket) const {
     try {
       auto buffer = beast::flat_buffer{};
-      auto req = bhttp::request<bhttp::string_body>{};
-      bhttp::read(socket, buffer, req);
+      auto parser = bhttp::request_parser<bhttp::string_body>{};
+      parser.body_limit(std::numeric_limits<std::uint64_t>::max());
+      bhttp::read(socket, buffer, parser);
+      auto req = parser.release();
 
       auto h = handler();
       auto res = h ? h(fromBeastRequest(req))

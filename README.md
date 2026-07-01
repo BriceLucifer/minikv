@@ -167,12 +167,18 @@ ctest --preset debug -R S3CompatTest --output-on-failure
 ```
 
 `S3CompatTest` starts temporary nginx/WebDAV volume storage and a C++ master,
-then runs `tests/s3_compat_test.py`. The Python suite mirrors the intent of
-upstream `tools/s3test.py`: boto3 write/list/delete, the known redirect-based
-`get_object` expected failure, and PyArrow file-info/list/delete/parquet
-checks. If `boto3` or `pyarrow` are not installed, those suites are reported as
-skipped rather than failing the core build. Set `MINIKV_RUN_LARGE_S3_COMPAT=1`
-to include the larger multipart parquet roundtrip.
+then runs `tests/s3_compat_test.py`. The topology follows the upstream deploy
+shape with five nginx/WebDAV volumes behind one master using three replicas.
+The Python suite mirrors the intent of upstream `tools/s3test.py`: boto3
+write/list/delete, the known redirect-based `get_object` expected failure, and
+PyArrow file-info/list/delete/parquet checks. If `boto3` or `pyarrow` are not
+installed, those suites are reported as skipped rather than failing the core
+build. Set `MINIKV_RUN_LARGE_S3_COMPAT=1` to include the larger multipart
+parquet roundtrip.
+
+If a local `.venv` exists at the repository root, the harness uses
+`.venv/bin/python3` automatically. This keeps boto3/PyArrow test dependencies
+out of the system Python while still exercising the real client libraries.
 
 For a strict environment where missing boto3/PyArrow should fail the test
 instead of skipping it:
@@ -181,6 +187,9 @@ instead of skipping it:
 MINIKV_REQUIRE_S3_COMPAT_DEPS=1 \
   ctest --preset debug -R S3CompatTest --output-on-failure
 ```
+
+Strict dependency mode also enables the large multipart parquet roundtrip by
+default, matching the upstream `tools/s3test.py` coverage more closely.
 
 Check dependency availability without starting the local topology:
 
@@ -208,6 +217,7 @@ Start the C++ master:
 ./build/debug/mkv \
   -volumes localhost:3001,localhost:3002,localhost:3003 \
   -db /tmp/indexdb \
+  -multipartttl 24h \
   server
 ```
 
@@ -244,6 +254,9 @@ instead of global `/tmp`, so multiple deployments do not share upload scratch
 space by accident. Stale multipart scratch files from a previous process are
 removed on startup, and a completion request that references a missing part
 keeps the upload id valid so the client can upload the missing part and retry.
+Abandoned uploads are also expired while the process is running; configure the
+runtime window with `-multipartttl`, using plain milliseconds or `ms`, `s`,
+`m`, and `h` suffixes.
 
 ## Release Build
 

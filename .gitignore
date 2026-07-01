@@ -2,7 +2,15 @@
 /build
 /cmake-build-*
 /compile_commands.json
+/CMakeUserPresets.json
 /.cache
+
+# Editor and OS-local files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
 
 # Python test/tooling artifacts
 __pycache__/
@@ -20,3 +28,11 @@ venv/
 # Local runtime artifacts
 *.log
 *.tmp
+.env
+.env.*
+/data/
+/tmp/
+/volumes/
+*.db/
+*.ldb
+*.log.old
