@@ -1,0 +1,16 @@
+[Unit]
+Description=minikv nginx volume %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/install -d -m 0775 /var/lib/minikv/volume-%i /var/lib/minikv/volume-%i/tmp
+ExecStart=/usr/sbin/nginx -c /etc/minikv/volume-%i.conf -p /var/lib/minikv/volume-%i/tmp
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

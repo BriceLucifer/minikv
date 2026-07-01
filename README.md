@@ -128,6 +128,18 @@ Fetched by CMake:
 - Boost.Beast
 - Boost.JSON
 
+Runtime services:
+
+- `nginx` with the WebDAV module for volume servers
+- One writable filesystem directory per volume
+- One LevelDB directory for the master index
+
+Optional compatibility test clients:
+
+- `requests`
+- `boto3`
+- `pyarrow`
+
 ## Build And Test
 
 Configure debug build:
@@ -197,6 +209,18 @@ Check dependency availability without starting the local topology:
 python3 tests/s3_compat_test.py --check-deps
 ```
 
+Run the upstream-style HTTP client compatibility harness:
+
+```bash
+MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 \
+  ctest --preset debug -R UpstreamCompatTest --output-on-failure
+```
+
+`UpstreamCompatTest` mirrors upstream `tools/test.py` against a temporary
+deploy topology with five nginx/WebDAV volumes and one master. It covers the
+original HTTP API: writes, redirects, deletes, range requests, HEAD metadata,
+large objects, JSON listing, empty-body rejection, and `Content-Md5`.
+
 ## Run With nginx Volumes
 
 This rewrite keeps the original minikeyvalue storage model: the master is C++,
@@ -258,6 +282,99 @@ Abandoned uploads are also expired while the process is running; configure the
 runtime window with `-multipartttl`, using plain milliseconds or `ms`, `s`,
 `m`, and `h` suffixes.
 
+## Production Deploy
+
+The production shape should stay close to upstream:
+
+```text
+clients -> mkv master -> nginx/WebDAV volume servers -> local filesystems
+```
+
+The master stores only LevelDB metadata. Volume servers store object bytes on
+ordinary filesystems behind stock nginx/WebDAV. Do not point multiple masters
+at the same LevelDB path; stop the master before running `rebuild` or
+`rebalance`.
+
+Example filesystem layout:
+
+```text
+/usr/local/bin/mkv
+/etc/minikv/master.env
+/etc/minikv/volume-1.conf
+/var/lib/minikv/indexdb/
+/var/lib/minikv/volume-1/
+/var/lib/minikv/volume-2/
+/var/lib/minikv/volume-3/
+```
+
+Example service/config templates are in `deploy/`:
+
+```text
+deploy/minikv-master.env.example
+deploy/minikv-master.service
+deploy/minikv-volume@.service
+deploy/nginx-volume.conf.example
+```
+
+One host can run several volume services by copying
+`deploy/nginx-volume.conf.example` to `/etc/minikv/volume-1.conf`,
+`/etc/minikv/volume-2.conf`, and so on, then changing `listen`, `pid`, log, and
+`root` paths. Start them with systemd instance names:
+
+```bash
+sudo install -d /etc/minikv /var/lib/minikv
+sudo cp deploy/minikv-volume@.service /etc/systemd/system/
+sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-1.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now minikv-volume@1
+```
+
+Install and start the master:
+
+```bash
+sudo install -m 0755 build/release/mkv /usr/local/bin/mkv
+sudo cp deploy/minikv-master.env.example /etc/minikv/master.env
+sudo cp deploy/minikv-master.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now minikv-master
+```
+
+Edit `/etc/minikv/master.env` before starting production. `MINIKV_VOLUMES`
+must list every volume address the master should use, and
+`MINIKV_REPLICAS` must be no larger than that list. Keep `MINIKV_SUBVOLUMES`
+stable for an existing deployment unless you are deliberately rebalancing.
+
+Before accepting traffic, run the same gates used by this repo:
+
+```bash
+cmake --build --preset release
+ctest --preset debug
+MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 \
+  ctest --preset debug -R UpstreamCompatTest --output-on-failure
+MINIKV_REQUIRE_S3_COMPAT_DEPS=1 \
+  ctest --preset debug -R S3CompatTest --output-on-failure
+```
+
+For a machine without system Python packages, install the optional client
+libraries into the local virtualenv with `uv`:
+
+```bash
+UV_CACHE_DIR=$PWD/.cache/uv uv venv .venv
+UV_CACHE_DIR=$PWD/.cache/uv uv pip install requests boto3 pyarrow
+```
+
+Operational notes:
+
+- Back up the LevelDB directory and volume files together when possible.
+- Use `UNLINK` plus `?unlinked` if you want a protected delete workflow.
+- Use `rebuild` to reconstruct LevelDB metadata from volume files after losing
+  the index.
+- Use `rebalance` after changing the preferred volume list; stop the master
+  first because LevelDB allows one process at a time.
+- Watch nginx disk usage and the master `*.multipart` scratch directory.
+- Keep volume ports private to trusted clients or put authentication/TLS in
+  front of the master and volumes.
+
 ## Release Build
 
 Configure release build:
@@ -316,6 +433,14 @@ tests/
   index_test.cpp
   server_test.cpp
   volume_client_test.cpp
+  upstream_compat_test.py
+  s3_compat_test.py
+
+deploy/
+  minikv-master.env.example
+  minikv-master.service
+  minikv-volume@.service
+  nginx-volume.conf.example
 ```
 
 ## Notes

@@ -50,3 +50,15 @@ add_test(
 set_tests_properties(S3CompatTest PROPERTIES
   WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 )
+
+add_test(
+  NAME UpstreamCompatTest
+  COMMAND bash
+          ${CMAKE_CURRENT_SOURCE_DIR}/upstream_compat_test.sh
+          $<TARGET_FILE:mkv>
+          ${CMAKE_CURRENT_SOURCE_DIR}/upstream_compat_test.py
+)
+
+set_tests_properties(UpstreamCompatTest PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)

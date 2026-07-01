@@ -18,6 +18,10 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     Strict mode also enables the large multipart parquet roundtrip by default.
   - boto3/PyArrow are installed in the local `.venv` with `uv`, and strict
     `S3CompatTest` now passes against the five-volume deploy topology.
+  - Upstream-style HTTP compatibility harness mirrors `tools/test.py` with
+    real `requests` clients against the same five-volume deploy topology.
+  - Production deploy templates now cover systemd master, systemd nginx volume
+    instances, nginx/WebDAV volume config, and master environment config.
   - S3 `HEAD` returns direct object metadata for real S3 clients, and AWS SDK
     `aws-chunked` streaming payloads are decoded before replica writes.
   - Go-style CLI parsing and `mkv server` executable entry point.
@@ -65,13 +69,15 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     volume client behavior.
 - Latest verified commands:
   - `UV_CACHE_DIR=/home/brice/minikv/.cache/uv /home/brice/.local/bin/uv pip
-    install boto3 pyarrow`
+    install requests boto3 pyarrow`
   - `cmake --build --preset debug`
+  - `MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 ctest --preset debug -R
+    UpstreamCompatTest --output-on-failure`
   - `./build/debug/tests/mkv_tests --gtest_filter='HttpAdapterTest.AcceptsLargeRequestBodies:ServerRouteTest.GetAndHeadRoutesReturnRedirectLocation:ServerRouteTest.PutRouteDecodesAwsChunkedPayloads:ServerRouteTest.S3Multipart*:CliTest.*:ServerAppTest.StoresOptions'`
   - `MINIKV_REQUIRE_S3_COMPAT_DEPS=1 ctest --preset debug -R S3CompatTest
     --output-on-failure` passed with boto3, PyArrow, and the large multipart
     parquet roundtrip.
-  - `ctest --preset debug` with `91/91 tests passed`
+  - `ctest --preset debug` with `92/92 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -104,10 +110,15 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   target volumes, updates LevelDB metadata, and deletes stale replicas.
 - nginx/WebDAV end-to-end CTest smoke test, including rebuild recovery and
   rebalance migration.
+- Upstream-style HTTP compatibility CTest mirrors upstream `tools/test.py`
+  against a five-volume, three-replica deploy topology using real `requests`
+  clients.
 - S3 compatibility CTest wrapper starts temporary nginx volumes and a C++
   master in a five-volume, three-replica deploy topology, then runs
   upstream-style boto3/PyArrow Python tests when those optional dependencies
   are installed.
+- README includes production deploy instructions and `deploy/` includes
+  systemd/nginx templates for master and volume services.
 - README documents how to run `S3CompatTest`, why missing boto3/PyArrow suites
   are skipped, how to require those dependencies, and how to enable the larger
   multipart parquet roundtrip.

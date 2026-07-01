@@ -1,0 +1,25 @@
+[Unit]
+Description=minikv master
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/minikv/master.env
+ExecStart=/usr/local/bin/mkv \
+  -port ${MINIKV_PORT} \
+  -db ${MINIKV_DB} \
+  -volumes ${MINIKV_VOLUMES} \
+  -replicas ${MINIKV_REPLICAS} \
+  -subvolumes ${MINIKV_SUBVOLUMES} \
+  -voltimeout ${MINIKV_VOLTIMEOUT} \
+  -multipartttl ${MINIKV_MULTIPART_TTL} \
+  ${MINIKV_EXTRA_ARGS} \
+  server
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=1048576
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
