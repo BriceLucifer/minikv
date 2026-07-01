@@ -13,6 +13,13 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     `requests` harness modeled after upstream `tools/test.py`.
   - Core S3 behavior is covered by `S3CompatTest`, a real boto3/PyArrow harness
     modeled after upstream `tools/s3test.py`.
+  - Current verdict: the rewrite is functionally aligned for the upstream
+    API/test surface, but it is not a byte-for-byte clone. The main intentional
+    difference is `HEAD`: `GET` keeps the upstream 302 redirect model, while
+    `HEAD` returns direct metadata so real S3/PyArrow clients work reliably.
+  - Latest verification: strict HTTP/S3 compatibility tests pass against a
+    temporary five-volume nginx/WebDAV deploy, and the full debug test suite
+    passes with `94/94` tests.
   - The C++ rewrite is now ahead of upstream for S3 metadata, AWS chunked
     upload compatibility, runtime multipart cleanup, streaming multipart
     completion, deploy templates, and bounded worker execution.
@@ -176,16 +183,17 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 ## Next
 
-1. Add production benchmark evidence.
-   - Run a repeatable deploy benchmark against the five-volume topology for
-     PUT/GET/DELETE throughput, MiB/s, latency percentiles, and error counts.
-   - Record release-build hardware, object size mix, replica count, worker
-     count, and disk path in README/TODO so results are comparable later.
-2. Improve S3 error compatibility.
+1. Improve S3 error compatibility.
    - Return AWS-style XML error bodies for common S3 failures:
      `NoSuchKey`, `NoSuchBucket`-style path misses where applicable,
      `AccessDenied`/overwrite rejection, malformed XML, invalid part number,
      unknown upload id, and missing multipart parts.
+   - Keep the existing status-code behavior compatible with upstream tests.
+2. Add production benchmark evidence.
+   - Run a repeatable deploy benchmark against the five-volume topology for
+     PUT/GET/DELETE throughput, MiB/s, latency percentiles, and error counts.
+   - Record release-build hardware, object size mix, replica count, worker
+     count, and disk path in README/TODO so results are comparable later.
 3. Add AI-agent memory operations runbooks.
    - Document key naming, retention, lifecycle cleanup, backup/restore drills,
      rebuild/rebalance procedures, and recommended external metadata/vector DB

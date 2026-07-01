@@ -242,7 +242,9 @@ large objects, JSON listing, empty-body rejection, and `Content-Md5`.
 ## Upstream Parity Status
 
 This rewrite is functionally aligned with upstream `geohot/minikeyvalue` at
-commit `451d248` for the main operational surface:
+commit `451d248` for the main operational surface. It is API-compatible for
+the upstream-tested behavior, but it is not intended to be a byte-for-byte
+clone where a stronger client-facing behavior is needed:
 
 - Original HTTP API: `GET`, `PUT`, `DELETE`, `UNLINK`, `REBALANCE`, `?list`,
   `?unlinked`, range reads through nginx redirects, duplicate write/delete
@@ -256,6 +258,15 @@ commit `451d248` for the main operational surface:
 - S3 subset: list, bulk delete, multipart upload, boto3 write/list/delete, the
   upstream redirect limitation for boto3 `get_object`, and PyArrow
   file-info/list/delete/parquet workflows.
+
+Compatibility is verified by real deploy-style tests, not only unit tests:
+
+- `UpstreamCompatTest` mirrors upstream `tools/test.py` with a temporary
+  five-volume nginx/WebDAV deployment and a C++ master.
+- `S3CompatTest` mirrors upstream `tools/s3test.py` with real boto3/PyArrow
+  clients; strict mode requires those dependencies and runs the large parquet
+  multipart roundtrip.
+- The current debug preset passes `ctest --preset debug` with all 94 tests.
 
 The C++ rewrite is intentionally stronger than upstream in several places:
 
@@ -273,8 +284,8 @@ The C++ rewrite is intentionally stronger than upstream in several places:
 
 Known remaining gaps before calling the rewrite production-complete:
 
-- S3 error responses are still minimal HTTP statuses, not AWS-compatible XML
-  error documents.
+- S3 error responses are upstream-compatible enough for the tested clients, but
+  they are still minimal HTTP statuses, not AWS-compatible XML error documents.
 - There is no checked-in benchmark report yet for the five-volume topology.
 - Operational guidance exists, but backup/restore drills, monitoring metrics,
   and capacity/retention policy examples still need concrete runbooks.
