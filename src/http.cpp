@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <exception>
 #include <future>
 #include <limits>
 #include <memory>
@@ -75,7 +76,8 @@ std::string percentDecode(std::string_view value) {
   return out;
 }
 
-std::unordered_map<std::string, std::string> parseParams(std::string_view query) {
+std::unordered_map<std::string, std::string>
+parseParams(std::string_view query) {
   auto params = std::unordered_map<std::string, std::string>{};
   while (!query.empty()) {
     const auto amp = query.find('&');
@@ -123,7 +125,8 @@ ParsedUrl parseHttpUrl(std::string_view url) {
   url.remove_prefix(scheme.size());
 
   const auto slash = url.find('/');
-  const auto authority = slash == std::string_view::npos ? url : url.substr(0, slash);
+  const auto authority =
+      slash == std::string_view::npos ? url : url.substr(0, slash);
   auto target = slash == std::string_view::npos ? std::string{"/"}
                                                 : toString(url.substr(slash));
 
@@ -165,13 +168,14 @@ Request fromBeastRequest(const bhttp::request<bhttp::string_body> &req) {
   splitTarget(out.target, out.path, out.params);
   out.body = req.body();
   for (const auto &field : req.base()) {
-    out.headers.emplace(lowercase(field.name_string()), toString(field.value()));
+    out.headers.emplace(lowercase(field.name_string()),
+                        toString(field.value()));
   }
   return out;
 }
 
-bhttp::response<bhttp::string_body>
-toBeastResponse(const Response &res, bool head_response) {
+bhttp::response<bhttp::string_body> toBeastResponse(const Response &res,
+                                                    bool head_response) {
   auto out = bhttp::response<bhttp::string_body>{
       static_cast<bhttp::status>(res.status), 11};
   for (const auto &[key, value] : res.headers) {
@@ -195,7 +199,7 @@ std::size_t workerCount() {
 }
 
 bool Request::hasParam(std::string_view key) const {
-  return params.find(toString(key)) != params.end();
+  return params.contains(toString(key));
 }
 
 std::string Request::getParamValue(std::string_view key) const {
@@ -234,24 +238,25 @@ public:
 
   int bindToAnyPort(std::string_view address) {
     auto ec = boost::system::error_code{};
-    auto endpoint = tcp::endpoint{asio::ip::make_address(toString(address), ec), 0};
+    auto endpoint =
+        tcp::endpoint{asio::ip::make_address(toString(address), ec), 0};
     if (ec) {
       return -1;
     }
 
-    acceptor_.open(endpoint.protocol(), ec);
+    (void)acceptor_.open(endpoint.protocol(), ec);
     if (ec) {
       return -1;
     }
-    acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
+    (void)acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
     if (ec) {
       return -1;
     }
-    acceptor_.bind(endpoint, ec);
+    (void)acceptor_.bind(endpoint, ec);
     if (ec) {
       return -1;
     }
-    acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+    (void)acceptor_.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
       return -1;
     }
@@ -262,26 +267,25 @@ public:
 
   bool listen(std::string_view address, int port) {
     auto ec = boost::system::error_code{};
-    auto endpoint =
-        tcp::endpoint{asio::ip::make_address(toString(address), ec),
-                      static_cast<unsigned short>(port)};
+    auto endpoint = tcp::endpoint{asio::ip::make_address(toString(address), ec),
+                                  static_cast<unsigned short>(port)};
     if (ec) {
       return false;
     }
 
-    acceptor_.open(endpoint.protocol(), ec);
+    (void)acceptor_.open(endpoint.protocol(), ec);
     if (ec) {
       return false;
     }
-    acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
+    (void)acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
     if (ec) {
       return false;
     }
-    acceptor_.bind(endpoint, ec);
+    (void)acceptor_.bind(endpoint, ec);
     if (ec) {
       return false;
     }
-    acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+    (void)acceptor_.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
       return false;
     }
@@ -295,7 +299,7 @@ public:
     while (!stopped_.load()) {
       auto socket = tcp::socket{io_};
       auto ec = boost::system::error_code{};
-      acceptor_.accept(socket, ec);
+      (void)acceptor_.accept(socket, ec);
       if (ec) {
         if (stopped_.load()) {
           break;
@@ -314,7 +318,8 @@ public:
   }
 
   void waitUntilReady() const {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{5};
     while (!ready_.load()) {
       if (std::chrono::steady_clock::now() >= deadline) {
         throw std::runtime_error("HTTP server did not become ready");
@@ -329,7 +334,7 @@ public:
     }
     wakeAccept();
     auto ec = boost::system::error_code{};
-    acceptor_.close(ec);
+    (void)acceptor_.close(ec);
     io_.stop();
     workers_.stop();
     workers_.join();
@@ -358,8 +363,9 @@ private:
       bhttp::write(socket, beast_res);
 
       auto ec = boost::system::error_code{};
-      socket.shutdown(tcp::socket::shutdown_send, ec);
-    } catch (...) {
+      (void)socket.shutdown(tcp::socket::shutdown_send, ec);
+    } catch (const std::exception &ex) {
+      (void)ex;
     }
   }
 
@@ -379,8 +385,9 @@ private:
       if (ec) {
         return;
       }
-      socket.connect(endpoint, ec);
-    } catch (...) {
+      (void)socket.connect(endpoint, ec);
+    } catch (const std::exception &ex) {
+      (void)ex;
     }
   }
 
@@ -407,7 +414,9 @@ Server::Server(Server &&) noexcept = default;
 
 Server &Server::operator=(Server &&) noexcept = default;
 
-void Server::setHandler(Handler handler) { impl_->setHandler(std::move(handler)); }
+void Server::setHandler(Handler handler) {
+  impl_->setHandler(std::move(handler));
+}
 
 int Server::bindToAnyPort(std::string_view address) {
   return impl_->bindToAnyPort(address);
@@ -448,14 +457,14 @@ ClientResponse request(std::string_view method, std::string_view url,
 
   auto resolve_future =
       resolver.async_resolve(parsed.host, parsed.port, asio::use_future);
-  waitForOperation(ioc, resolve_future, timeout, [&resolver] {
-    resolver.cancel();
-  });
+  waitForOperation(ioc, resolve_future, timeout,
+                   [&resolver] { resolver.cancel(); });
   const auto endpoints = resolve_future.get();
 
   stream.expires_after(timeout);
   auto connect_future = stream.async_connect(endpoints, asio::use_future);
-  waitForOperation(ioc, connect_future, timeout, [&stream] { stream.cancel(); });
+  waitForOperation(ioc, connect_future, timeout,
+                   [&stream] { stream.cancel(); });
   [[maybe_unused]] const auto connected_endpoint = connect_future.get();
 
   auto req = bhttp::request<bhttp::string_body>{};
@@ -488,7 +497,8 @@ ClientResponse request(std::string_view method, std::string_view url,
     const auto &res = parser.get();
     out.status = static_cast<int>(res.result_int());
     for (const auto &field : res.base()) {
-      out.headers.emplace(lowercase(field.name_string()), toString(field.value()));
+      out.headers.emplace(lowercase(field.name_string()),
+                          toString(field.value()));
     }
   } else {
     auto res = bhttp::response<bhttp::string_body>{};
@@ -499,12 +509,13 @@ ClientResponse request(std::string_view method, std::string_view url,
     out.status = static_cast<int>(res.result_int());
     out.body = res.body();
     for (const auto &field : res.base()) {
-      out.headers.emplace(lowercase(field.name_string()), toString(field.value()));
+      out.headers.emplace(lowercase(field.name_string()),
+                          toString(field.value()));
     }
   }
 
   auto ec = boost::system::error_code{};
-  stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+  (void)stream.socket().shutdown(tcp::socket::shutdown_both, ec);
   return out;
 }
 

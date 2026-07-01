@@ -2,6 +2,7 @@
 
 #include <openssl/evp.h>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -15,9 +16,7 @@ namespace minikv {
 namespace {
 
 struct EvpMdCtxDeleter {
-  void operator()(EVP_MD_CTX* ctx) const {
-    EVP_MD_CTX_free(ctx);
-  }
+  void operator()(EVP_MD_CTX *ctx) const { EVP_MD_CTX_free(ctx); }
 };
 
 using EvpMdCtx = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
@@ -71,7 +70,7 @@ std::string md5_hex_files(const std::vector<std::filesystem::path> &paths) {
     throw std::runtime_error("EVP_DigestInit_ex failed");
   }
 
-  auto buffer = std::array<char, 64 * 1024>{};
+  auto buffer = std::array<char, std::size_t{64} * 1024>{};
   for (const auto &path : paths) {
     auto file = std::ifstream{path, std::ios::binary};
     if (!file) {

@@ -4,8 +4,8 @@
 #include "placement.hpp"
 #include "record.hpp"
 
-#include <gtest/gtest.h>
 #include "http_test_util.hpp"
+#include <gtest/gtest.h>
 
 #include <filesystem>
 #include <stdexcept>
@@ -39,7 +39,7 @@ public:
     server.waitUntilReady();
   }
 
-  std::string volume() const {
+  [[nodiscard]] std::string volume() const {
     return "127.0.0.1:" + std::to_string(port_);
   }
 
@@ -87,8 +87,9 @@ TEST(RebalanceTest, RebalanceObjectCopiesToTargetAndDeletesStaleReplica) {
   std::string target_path;
   std::string target_body;
   LocalVolumeServer target;
-  target.server.Get(R"(/.*)", [](const minikv::http::Request &,
-                                 minikv::http::Response &res) { res.status = 404; });
+  target.server.Get(R"(/.*)",
+                    [](const minikv::http::Request &,
+                       minikv::http::Response &res) { res.status = 404; });
   target.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
                                   minikv::http::Response &res) {
     target_path = req.path;
@@ -100,12 +101,12 @@ TEST(RebalanceTest, RebalanceObjectCopiesToTargetAndDeletesStaleReplica) {
   {
     auto index = minikv::index::LevelDbIndex{path};
     const auto key = std::string{"/hello"};
-    ASSERT_TRUE(index.putRecord(
-        key, minikv::record::Record{
-                 .rvolumes = {source.volume()},
-                 .deleted = minikv::record::Deleted::NO,
-                 .hash = "321c3cf486ed509164edec1e1981fec8",
-             }));
+    ASSERT_TRUE(
+        index.putRecord(key, minikv::record::Record{
+                                 .rvolumes = {source.volume()},
+                                 .deleted = minikv::record::Deleted::NO,
+                                 .hash = "321c3cf486ed509164edec1e1981fec8",
+                             }));
 
     const auto options = minikv::rebalance::Options{
         .db_path = path,
@@ -137,10 +138,9 @@ TEST(RebalanceTest, RebalanceObjectFailsWhenNoRecordedReplicaExists) {
   const auto cleanup = [&] { std::filesystem::remove_all(path); };
 
   LocalVolumeServer missing;
-  missing.server.Get(R"(/.*)", [](const minikv::http::Request &,
-                                  minikv::http::Response &res) {
-    res.status = 404;
-  });
+  missing.server.Get(R"(/.*)",
+                     [](const minikv::http::Request &,
+                        minikv::http::Response &res) { res.status = 404; });
   missing.start();
 
   {
@@ -152,8 +152,8 @@ TEST(RebalanceTest, RebalanceObjectFailsWhenNoRecordedReplicaExists) {
         .subvolumes = 1,
     };
 
-    EXPECT_FALSE(minikv::rebalance::rebalanceObject(
-        index, options, "/missing", {missing.volume()}));
+    EXPECT_FALSE(minikv::rebalance::rebalanceObject(index, options, "/missing",
+                                                    {missing.volume()}));
   }
 
   cleanup();

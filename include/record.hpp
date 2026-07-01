@@ -1,12 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace minikv::record {
 
-enum class Deleted {
+enum class Deleted : std::uint8_t {
   NO,
   SOFT,
   HARD,

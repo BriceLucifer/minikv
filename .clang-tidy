@@ -1,0 +1,16 @@
+Checks: >
+  clang-analyzer-*,
+  -clang-analyzer-optin.cplusplus.VirtualCall,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-random-generator-seed,
+  -bugprone-unused-return-value,
+  performance-*,
+  modernize-use-nodiscard,
+  readability-container-contains,
+  readability-implicit-bool-conversion,
+  readability-inconsistent-declaration-parameter-name
+WarningsAsErrors: ''
+HeaderFilterRegex: '^.*/(include|src|tests)/'
+ExcludeHeaderFilterRegex: '^.*/build/'
+FormatStyle: file

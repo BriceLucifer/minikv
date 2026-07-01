@@ -24,23 +24,31 @@ class TestClient {
 public:
   explicit TestClient(std::string origin) : origin_(std::move(origin)) {}
 
-  TestResult Get(std::string_view path) const { return Custom("GET", path); }
-  TestResult Head(std::string_view path) const { return Custom("HEAD", path); }
-  TestResult Delete(std::string_view path) const { return Custom("DELETE", path); }
-
-  TestResult Put(std::string_view path, std::string_view body,
-                 std::string_view content_type) const {
-    return {http::request("PUT", origin_ + std::string{path}, body,
-                          content_type)};
+  [[nodiscard]] TestResult Get(std::string_view path) const {
+    return Custom("GET", path);
+  }
+  [[nodiscard]] TestResult Head(std::string_view path) const {
+    return Custom("HEAD", path);
+  }
+  [[nodiscard]] TestResult Delete(std::string_view path) const {
+    return Custom("DELETE", path);
   }
 
-  TestResult Post(std::string_view path, std::string_view body,
-                  std::string_view content_type = "application/xml") const {
-    return {http::request("POST", origin_ + std::string{path}, body,
-                          content_type)};
+  [[nodiscard]] TestResult Put(std::string_view path, std::string_view body,
+                               std::string_view content_type) const {
+    return {
+        http::request("PUT", origin_ + std::string{path}, body, content_type)};
   }
 
-  TestResult Custom(std::string_view method, std::string_view path) const {
+  [[nodiscard]] TestResult
+  Post(std::string_view path, std::string_view body,
+       std::string_view content_type = "application/xml") const {
+    return {
+        http::request("POST", origin_ + std::string{path}, body, content_type)};
+  }
+
+  [[nodiscard]] TestResult Custom(std::string_view method,
+                                  std::string_view path) const {
     return {http::request(method, origin_ + std::string{path})};
   }
 
@@ -93,8 +101,8 @@ private:
   };
 
   void addRoute(std::string method, std::string pattern, RouteHandler handler) {
-    routes_.push_back({std::move(method), std::move(pattern),
-                       std::move(handler)});
+    routes_.push_back(
+        {std::move(method), std::move(pattern), std::move(handler)});
   }
 
   void installDispatcher() {
@@ -102,7 +110,8 @@ private:
       return;
     }
     server_.setHandler([this](const http::Request &req) {
-      auto res = http::Response{.status = 404};
+      auto res = http::Response{};
+      res.status = 404;
       for (const auto &route : routes_) {
         const auto method_matches =
             route.method == req.method ||
@@ -138,7 +147,7 @@ public:
     server.waitUntilReady();
   }
 
-  std::string volume() const {
+  [[nodiscard]] std::string volume() const {
     return "127.0.0.1:" + std::to_string(port_);
   }
 

@@ -4,9 +4,9 @@
 #include "placement.hpp"
 #include "record.hpp"
 
-#include <gtest/gtest.h>
 #include "http_test_util.hpp"
 #include <boost/json.hpp>
+#include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
@@ -77,13 +77,11 @@ public:
       throw std::runtime_error("failed to bind test volume server");
     }
 
-    worker_ = std::thread([this] {
-      server.listenAfterBind();
-    });
+    worker_ = std::thread([this] { server.listenAfterBind(); });
     server.waitUntilReady();
   }
 
-  std::string volume() const {
+  [[nodiscard]] std::string volume() const {
     return "127.0.0.1:" + std::to_string(port_);
   }
 
@@ -139,8 +137,7 @@ TEST(ServerAppTest, StoresOptions) {
     EXPECT_EQ(app.options().protect, options.protect);
     EXPECT_EQ(app.options().md5sum, options.md5sum);
     EXPECT_EQ(app.options().volume_timeout, options.volume_timeout);
-    EXPECT_EQ(app.options().multipart_upload_ttl,
-              options.multipart_upload_ttl);
+    EXPECT_EQ(app.options().multipart_upload_ttl, options.multipart_upload_ttl);
   }
 
   cleanup();
@@ -236,10 +233,9 @@ TEST(ServerAppTest, WriteToReplicasStoresRemoteBodyAndFinalRecord) {
 
 TEST(ServerAppTest, ReadFromReplicaReturnsRedirectForLiveRecord) {
   LocalVolumeServer volume;
-  volume.server.Get(R"(/.*)", [](const minikv::http::Request &,
-                                 minikv::http::Response &res) {
-    res.status = 200;
-  });
+  volume.server.Get(R"(/.*)",
+                    [](const minikv::http::Request &,
+                       minikv::http::Response &res) { res.status = 200; });
   volume.start();
 
   auto options = appOptions("read-redirect");
@@ -260,8 +256,8 @@ TEST(ServerAppTest, ReadFromReplicaReturnsRedirectForLiveRecord) {
     const auto result = app.readFromReplica("/hello");
 
     EXPECT_EQ(result.status, 302);
-    EXPECT_EQ(result.redirect_url,
-              "http://" + volume.volume() + minikv::placement::key2path("/hello"));
+    EXPECT_EQ(result.redirect_url, "http://" + volume.volume() +
+                                       minikv::placement::key2path("/hello"));
     EXPECT_EQ(result.record.rvolumes, rec.rvolumes);
     EXPECT_EQ(result.record.deleted, rec.deleted);
     EXPECT_EQ(result.record.hash, rec.hash);
@@ -402,7 +398,8 @@ TEST(ServerAppTest, DeleteFromReplicasRespectsProtectForLiveRecord) {
   cleanup();
 }
 
-TEST(ServerAppTest, DeleteFromReplicasDeletesRemoteObjectsAndHardDeletesRecord) {
+TEST(ServerAppTest,
+     DeleteFromReplicasDeletesRemoteObjectsAndHardDeletesRecord) {
   std::vector<std::string> deleted_paths;
 
   LocalVolumeServer volume;
@@ -443,10 +440,9 @@ TEST(ServerAppTest, DeleteFromReplicasDeletesRemoteObjectsAndHardDeletesRecord) 
 
 TEST(ServerAppTest, DeleteFromReplicasKeepsSoftRecordWhenRemoteDeleteFails) {
   LocalVolumeServer volume;
-  volume.server.Delete(R"(/.*)", [](const minikv::http::Request &,
-                                    minikv::http::Response &res) {
-    res.status = 500;
-  });
+  volume.server.Delete(R"(/.*)",
+                       [](const minikv::http::Request &,
+                          minikv::http::Response &res) { res.status = 500; });
   volume.start();
 
   auto options = appOptions("delete-remote-fails");
@@ -521,7 +517,8 @@ TEST(ServerAppTest, DeleteFromReplicasUnlinkOnlySoftDeletesMetadata) {
   cleanup();
 }
 
-TEST(ServerAppTest, DeleteFromReplicasUnlinkReturnsNotFoundForSoftDeletedRecord) {
+TEST(ServerAppTest,
+     DeleteFromReplicasUnlinkReturnsNotFoundForSoftDeletedRecord) {
   const auto options = appOptions("delete-unlink-soft");
   const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
 
@@ -568,7 +565,8 @@ TEST(ServerRouteTest, PutRouteWritesToReplicas) {
     master.start();
 
     minikv::test::TestClient client("http://" + master.volume());
-    const auto res = client.Put("/hello", "payload", "application/octet-stream");
+    const auto res =
+        client.Put("/hello", "payload", "application/octet-stream");
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 201);
@@ -615,7 +613,8 @@ TEST(ServerRouteTest, PutRouteRejectsEmptyBodyWithoutWritingRecord) {
     EXPECT_FALSE(remote_put_called);
     EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::HARD);
 
-    const auto retry = client.Put("/hello", "payload", "application/octet-stream");
+    const auto retry =
+        client.Put("/hello", "payload", "application/octet-stream");
     ASSERT_TRUE(retry);
     EXPECT_EQ(retry->status, 201);
     EXPECT_EQ(app.getRecord("/hello").deleted, minikv::record::Deleted::NO);
@@ -655,7 +654,8 @@ TEST(ServerRouteTest, PutRouteRejectsOverwriteOfLiveRecord) {
     master.start();
 
     minikv::test::TestClient client("http://" + master.volume());
-    const auto res = client.Put("/hello", "payload", "application/octet-stream");
+    const auto res =
+        client.Put("/hello", "payload", "application/octet-stream");
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 403);
@@ -733,13 +733,12 @@ TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/delete-me",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/delete-me", minikv::record::Record{
+                                        .rvolumes = {volume.volume()},
+                                        .deleted = minikv::record::Deleted::NO,
+                                        .hash = "",
+                                    }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -772,13 +771,13 @@ TEST(ServerRouteTest, MutatingRoutesReturnConflictWhenKeyIsLocked) {
 
 TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
   LocalVolumeServer volume;
-  volume.server.Get(R"(/.*)", [](const minikv::http::Request &,
-                                 minikv::http::Response &res) {
-    res.status = 200;
-    res.setHeader("Content-Length", "5");
-    res.setHeader("ETag", "\"hello-etag\"");
-    res.setHeader("Last-Modified", "Wed, 01 Jul 2026 02:00:00 GMT");
-  });
+  volume.server.Get(
+      R"(/.*)", [](const minikv::http::Request &, minikv::http::Response &res) {
+        res.status = 200;
+        res.setHeader("Content-Length", "5");
+        res.setHeader("ETag", "\"hello-etag\"");
+        res.setHeader("Last-Modified", "Wed, 01 Jul 2026 02:00:00 GMT");
+      });
   volume.start();
 
   auto options = appOptions("route-read");
@@ -789,13 +788,12 @@ TEST(ServerRouteTest, GetAndHeadRoutesReturnRedirectLocation) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/hello",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "321c3cf486ed509164edec1e1981fec8",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/hello", minikv::record::Record{
+                                    .rvolumes = {volume.volume()},
+                                    .deleted = minikv::record::Deleted::NO,
+                                    .hash = "321c3cf486ed509164edec1e1981fec8",
+                                }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -839,34 +837,30 @@ TEST(ServerRouteTest, QueryListReturnsLiveKeysAsJson) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/runs/1",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/runs/2",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/runs/deleted",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::SOFT,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/other/1",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/runs/1", minikv::record::Record{
+                                     .rvolumes = {"volume-a"},
+                                     .deleted = minikv::record::Deleted::NO,
+                                     .hash = "",
+                                 }));
+    ASSERT_TRUE(
+        app.putRecord("/runs/2", minikv::record::Record{
+                                     .rvolumes = {"volume-a"},
+                                     .deleted = minikv::record::Deleted::NO,
+                                     .hash = "",
+                                 }));
+    ASSERT_TRUE(app.putRecord("/runs/deleted",
+                              minikv::record::Record{
+                                  .rvolumes = {"volume-a"},
+                                  .deleted = minikv::record::Deleted::SOFT,
+                                  .hash = "",
+                              }));
+    ASSERT_TRUE(
+        app.putRecord("/other/1", minikv::record::Record{
+                                      .rvolumes = {"volume-a"},
+                                      .deleted = minikv::record::Deleted::NO,
+                                      .hash = "",
+                                  }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -895,20 +889,18 @@ TEST(ServerRouteTest, QueryUnlinkedReturnsSoftDeletedKeysAsJson) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/live",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/soft",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::SOFT,
-            .hash = "",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/live", minikv::record::Record{
+                                   .rvolumes = {"volume-a"},
+                                   .deleted = minikv::record::Deleted::NO,
+                                   .hash = "",
+                               }));
+    ASSERT_TRUE(
+        app.putRecord("/soft", minikv::record::Record{
+                                   .rvolumes = {"volume-a"},
+                                   .deleted = minikv::record::Deleted::SOFT,
+                                   .hash = "",
+                               }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -936,13 +928,11 @@ TEST(ServerRouteTest, QueryListSupportsLimitAndStart) {
   {
     minikv::server::App app{options};
     for (const auto *key : {"/runs/1", "/runs/2", "/runs/3"}) {
-      ASSERT_TRUE(app.putRecord(
-          key,
-          minikv::record::Record{
-              .rvolumes = {"volume-a"},
-              .deleted = minikv::record::Deleted::NO,
-              .hash = "",
-          }));
+      ASSERT_TRUE(app.putRecord(key, minikv::record::Record{
+                                         .rvolumes = {"volume-a"},
+                                         .deleted = minikv::record::Deleted::NO,
+                                         .hash = "",
+                                     }));
     }
 
     LocalVolumeServer master;
@@ -1020,34 +1010,30 @@ TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/alpha.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/prefix/bravo&charlie.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/prefix/deleted.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::SOFT,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/other/prefix/ignored.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(app.putRecord("/bucket/alpha.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
+    ASSERT_TRUE(app.putRecord("/bucket/prefix/bravo&charlie.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
+    ASSERT_TRUE(app.putRecord("/bucket/prefix/deleted.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::SOFT,
+                                  .hash = "",
+                              }));
+    ASSERT_TRUE(app.putRecord("/other/prefix/ignored.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -1068,7 +1054,8 @@ TEST(ServerRouteTest, S3ListTypeTwoReturnsXmlKeysUnderBucketPrefix) {
               std::string::npos);
     EXPECT_NE(res->body.find("<Contents><Key>bravo&amp;charlie.txt</Key>"),
               std::string::npos);
-    EXPECT_NE(res->body.find("<LastModified>Wed, 01 Jul 2026 02:00:00 GMT</LastModified>"),
+    EXPECT_NE(res->body.find(
+                  "<LastModified>Wed, 01 Jul 2026 02:00:00 GMT</LastModified>"),
               std::string::npos);
     EXPECT_NE(res->body.find("<Size>456</Size>"), std::string::npos);
     EXPECT_NE(res->body.find("<ETag>&quot;bravo-etag&quot;</ETag>"),
@@ -1103,13 +1090,12 @@ TEST(ServerRouteTest, DeleteRouteDeletesRemoteObjects) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/hello",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/hello", minikv::record::Record{
+                                    .rvolumes = {volume.volume()},
+                                    .deleted = minikv::record::Deleted::NO,
+                                    .hash = "",
+                                }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -1147,35 +1133,34 @@ TEST(ServerRouteTest, S3BulkDeleteDeletesBucketChildKeys) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/alpha.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/bravo&charlie.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(app.putRecord("/bucket/alpha.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
+    ASSERT_TRUE(app.putRecord("/bucket/bravo&charlie.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
     minikv::test::TestClient client("http://" + master.volume());
-    const auto xml =
-        std::string{"<Delete><Object><Key>alpha.txt</Key></Object>"
-                    "<Object><Key>bravo&amp;charlie.txt</Key></Object></Delete>"};
+    const auto xml = std::string{
+        "<Delete><Object><Key>alpha.txt</Key></Object>"
+        "<Object><Key>bravo&amp;charlie.txt</Key></Object></Delete>"};
     const auto res = client.Post("/bucket?delete", xml);
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 204);
     ASSERT_EQ(deleted_paths.size(), 2U);
-    EXPECT_EQ(deleted_paths[0], minikv::placement::key2path("/bucket/alpha.txt"));
+    EXPECT_EQ(deleted_paths[0],
+              minikv::placement::key2path("/bucket/alpha.txt"));
     EXPECT_EQ(deleted_paths[1],
               minikv::placement::key2path("/bucket/bravo&charlie.txt"));
     EXPECT_EQ(app.getRecord("/bucket/alpha.txt").deleted,
@@ -1207,21 +1192,20 @@ TEST(ServerRouteTest, S3BulkDeleteRejectsMalformedXmlWithoutDeleting) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/alpha.txt",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(app.putRecord("/bucket/alpha.txt",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
     master.start();
 
     minikv::test::TestClient client("http://" + master.volume());
-    const auto res =
-        client.Post("/bucket?delete", "<Delete><Object><Key>alpha.txt</Object></Delete>");
+    const auto res = client.Post(
+        "/bucket?delete", "<Delete><Object><Key>alpha.txt</Object></Delete>");
 
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 500);
@@ -1271,8 +1255,8 @@ TEST(ServerRouteTest, S3MultipartUploadCombinesPartsAndWritesReplicas) {
     ASSERT_FALSE(upload_id.empty());
 
     const auto second =
-        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
-                   "world", "application/octet-stream");
+        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id, "world",
+                   "application/octet-stream");
     ASSERT_TRUE(second);
     EXPECT_EQ(second->status, 200);
     EXPECT_EQ(second->get_header_value("ETag"),
@@ -1423,8 +1407,8 @@ TEST(ServerRouteTest, S3MultipartMissingPartCanBeUploadedAndRetried) {
     EXPECT_TRUE(received_body.empty());
 
     const auto second =
-        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
-                   "world", "application/octet-stream");
+        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id, "world",
+                   "application/octet-stream");
     ASSERT_TRUE(second);
     EXPECT_EQ(second->status, 200);
 
@@ -1451,13 +1435,12 @@ TEST(ServerRouteTest, S3MultipartInitRejectsExistingLiveObject) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/object",
-        minikv::record::Record{
-            .rvolumes = {"volume-a"},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "",
-        }));
+    ASSERT_TRUE(app.putRecord("/bucket/object",
+                              minikv::record::Record{
+                                  .rvolumes = {"volume-a"},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "",
+                              }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -1514,8 +1497,8 @@ TEST(ServerRouteTest, S3MultipartAbortRemovesPartsWithoutDeletingObject) {
         client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
                    "hello ", "application/octet-stream");
     const auto second =
-        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
-                   "world", "application/octet-stream");
+        client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id, "world",
+                   "application/octet-stream");
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     ASSERT_EQ(first->status, 200);
@@ -1526,13 +1509,12 @@ TEST(ServerRouteTest, S3MultipartAbortRemovesPartsWithoutDeletingObject) {
     ASSERT_TRUE(std::filesystem::exists(part_one));
     ASSERT_TRUE(std::filesystem::exists(part_two));
 
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/object",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "5d41402abc4b2a76b9719d911017c592",
-        }));
+    ASSERT_TRUE(app.putRecord("/bucket/object",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "5d41402abc4b2a76b9719d911017c592",
+                              }));
 
     const auto abort = client.Delete("/bucket/object?uploadId=" + upload_id);
     ASSERT_TRUE(abort);
@@ -1613,8 +1595,8 @@ TEST(ServerRouteTest, S3MultipartExpiredUploadRemovesPartsAndRejectsRetry) {
     ASSERT_FALSE(upload_id.empty());
 
     const auto first =
-        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
-                   "stale", "application/octet-stream");
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id, "stale",
+                   "application/octet-stream");
     ASSERT_TRUE(first);
     ASSERT_EQ(first->status, 200);
 
@@ -1713,13 +1695,12 @@ TEST(ServerRouteTest, S3MultipartCompleteRejectsObjectMadeLiveAfterInit) {
     ASSERT_TRUE(part);
     ASSERT_EQ(part->status, 200);
 
-    ASSERT_TRUE(app.putRecord(
-        "/bucket/object",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "5d41402abc4b2a76b9719d911017c592",
-        }));
+    ASSERT_TRUE(app.putRecord("/bucket/object",
+                              minikv::record::Record{
+                                  .rvolumes = {volume.volume()},
+                                  .deleted = minikv::record::Deleted::NO,
+                                  .hash = "5d41402abc4b2a76b9719d911017c592",
+                              }));
 
     const auto complete_xml =
         std::string{"<CompleteMultipartUpload>"
@@ -1785,22 +1766,23 @@ TEST(ServerRouteTest, S3MultipartRoutesRespectWriteLocks) {
     ASSERT_FALSE(upload_id.empty());
 
     ASSERT_TRUE(app.lockKey("/bucket/object"));
-    const auto locked_abort = client.Delete("/bucket/object?uploadId=" + upload_id);
+    const auto locked_abort =
+        client.Delete("/bucket/object?uploadId=" + upload_id);
     app.unlockKey("/bucket/object");
     ASSERT_TRUE(locked_abort);
     EXPECT_EQ(locked_abort->status, 409);
 
     ASSERT_TRUE(app.lockKey("/bucket/object1"));
     const auto locked_part =
-        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
-                   "hello", "application/octet-stream");
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id, "hello",
+                   "application/octet-stream");
     app.unlockKey("/bucket/object1");
     ASSERT_TRUE(locked_part);
     EXPECT_EQ(locked_part->status, 409);
 
     const auto part =
-        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
-                   "hello", "application/octet-stream");
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id, "hello",
+                   "application/octet-stream");
     ASSERT_TRUE(part);
     ASSERT_EQ(part->status, 200);
 
@@ -1842,13 +1824,12 @@ TEST(ServerRouteTest, UnlinkRouteSoftDeletesWithoutTouchingRemoteObjects) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/hello",
-        minikv::record::Record{
-            .rvolumes = {volume.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "321c3cf486ed509164edec1e1981fec8",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/hello", minikv::record::Record{
+                                    .rvolumes = {volume.volume()},
+                                    .deleted = minikv::record::Deleted::NO,
+                                    .hash = "321c3cf486ed509164edec1e1981fec8",
+                                }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);
@@ -1889,10 +1870,9 @@ TEST(ServerRouteTest, RebalanceRouteCopiesToTargetAndDeletesStaleReplica) {
   std::string target_path;
   std::string target_body;
   LocalVolumeServer target;
-  target.server.Get(R"(/.*)", [](const minikv::http::Request &,
-                                 minikv::http::Response &res) {
-    res.status = 404;
-  });
+  target.server.Get(R"(/.*)",
+                    [](const minikv::http::Request &,
+                       minikv::http::Response &res) { res.status = 404; });
   target.server.Put(R"(/.*)", [&](const minikv::http::Request &req,
                                   minikv::http::Response &res) {
     target_path = req.path;
@@ -1909,13 +1889,12 @@ TEST(ServerRouteTest, RebalanceRouteCopiesToTargetAndDeletesStaleReplica) {
 
   {
     minikv::server::App app{options};
-    ASSERT_TRUE(app.putRecord(
-        "/hello",
-        minikv::record::Record{
-            .rvolumes = {source.volume()},
-            .deleted = minikv::record::Deleted::NO,
-            .hash = "321c3cf486ed509164edec1e1981fec8",
-        }));
+    ASSERT_TRUE(
+        app.putRecord("/hello", minikv::record::Record{
+                                    .rvolumes = {source.volume()},
+                                    .deleted = minikv::record::Deleted::NO,
+                                    .hash = "321c3cf486ed509164edec1e1981fec8",
+                                }));
 
     LocalVolumeServer master;
     minikv::server::registerRoutes(master.server, app);

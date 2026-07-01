@@ -19,8 +19,8 @@ struct Request {
   std::map<std::string, std::string> headers;
   std::string body;
 
-  bool hasParam(std::string_view key) const;
-  std::string getParamValue(std::string_view key) const;
+  [[nodiscard]] bool hasParam(std::string_view key) const;
+  [[nodiscard]] std::string getParamValue(std::string_view key) const;
 };
 
 struct Response {
@@ -48,12 +48,12 @@ public:
   Server &operator=(Server &&) noexcept;
 
   void setHandler(Handler handler);
-  int bindToAnyPort(std::string_view address);
-  bool listen(std::string_view address, int port);
+  [[nodiscard]] int bindToAnyPort(std::string_view address);
+  [[nodiscard]] bool listen(std::string_view address, int port);
   bool listenAfterBind();
   void waitUntilReady() const;
   void stop();
-  int port() const;
+  [[nodiscard]] int port() const;
 
 private:
   class Impl;
@@ -65,14 +65,14 @@ struct ClientResponse {
   std::map<std::string, std::string> headers;
   std::string body;
 
-  std::string headerValue(std::string_view key) const;
-  std::string get_header_value(std::string_view key) const;
+  [[nodiscard]] std::string headerValue(std::string_view key) const;
+  [[nodiscard]] std::string get_header_value(std::string_view key) const;
 };
 
-ClientResponse request(std::string_view method, std::string_view url,
-                       std::string_view body = {},
-                       std::string_view content_type = "application/octet-stream",
-                       std::chrono::milliseconds timeout =
-                           std::chrono::seconds{30});
+[[nodiscard]] ClientResponse
+request(std::string_view method, std::string_view url,
+        std::string_view body = {},
+        std::string_view content_type = "application/octet-stream",
+        std::chrono::milliseconds timeout = std::chrono::seconds{30});
 
 } // namespace minikv::http

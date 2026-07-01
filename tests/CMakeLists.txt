@@ -30,6 +30,7 @@ target_link_libraries(mkv_tests
 )
 
 target_compile_features(mkv_tests PRIVATE cxx_std_23)
+minikv_enable_project_warnings(mkv_tests)
 
 include(GoogleTest)
 gtest_discover_tests(mkv_tests)

@@ -9,8 +9,8 @@
 #include <boost/json.hpp>
 
 #include <algorithm>
-#include <charconv>
 #include <cctype>
+#include <charconv>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -40,13 +40,17 @@ public:
   KeyLockGuard(const KeyLockGuard &) = delete;
   KeyLockGuard &operator=(const KeyLockGuard &) = delete;
 
-  ~KeyLockGuard() {
+  ~KeyLockGuard() noexcept {
     if (locked_) {
-      app_.unlockKey(key_);
+      try {
+        app_.unlockKey(key_);
+      } catch (...) {
+        std::terminate();
+      }
     }
   }
 
-  bool locked() const { return locked_; }
+  [[nodiscard]] bool locked() const { return locked_; }
 
 private:
   App &app_;
@@ -66,7 +70,8 @@ std::string joinVolumes(const std::vector<std::string> &volumes) {
 }
 
 http::Response makeEmptyResponse(int status) {
-  auto res = http::Response{.status = status};
+  auto res = http::Response{};
+  res.status = status;
   res.setHeader("Content-Length", "0");
   return res;
 }
@@ -75,13 +80,21 @@ std::string quotedEtag(std::string_view body) {
   return "\"" + md5_hex(body) + "\"";
 }
 
-bool containsCaseInsensitive(std::string_view haystack, std::string_view needle) {
-  const auto it = std::search(
-      haystack.begin(), haystack.end(), needle.begin(), needle.end(),
-      [](char left, char right) {
-        return std::tolower(static_cast<unsigned char>(left)) ==
-               std::tolower(static_cast<unsigned char>(right));
-      });
+std::string remoteUrl(std::string_view volume, std::string_view keypath) {
+  auto remote = std::string{"http://"};
+  remote += volume;
+  remote += keypath;
+  return remote;
+}
+
+bool containsCaseInsensitive(std::string_view haystack,
+                             std::string_view needle) {
+  const auto it =
+      std::search(haystack.begin(), haystack.end(), needle.begin(),
+                  needle.end(), [](char left, char right) {
+                    return std::tolower(static_cast<unsigned char>(left)) ==
+                           std::tolower(static_cast<unsigned char>(right));
+                  });
   return it != haystack.end();
 }
 
@@ -119,8 +132,7 @@ std::string decodeAwsChunkedPayload(std::string_view body) {
     auto chunk_size = std::size_t{0};
     const auto *begin = size_text.data();
     const auto *end = begin + size_text.size();
-    const auto parsed =
-        std::from_chars(begin, end, chunk_size, 16);
+    const auto parsed = std::from_chars(begin, end, chunk_size, 16);
     if (parsed.ec != std::errc{} || parsed.ptr != end) {
       throw std::runtime_error("invalid aws-chunked size");
     }
@@ -165,13 +177,15 @@ ObjectMetadata objectMetadataFromReplicas(const record::Record &rec,
 
     try {
       const auto head =
-          volume_client::remoteHeadInfo("http://" + volume + keypath, timeout);
+          volume_client::remoteHeadInfo(remoteUrl(volume, keypath), timeout);
       if (head.found) {
         return {.size = head.content_length,
                 .etag = head.etag,
                 .last_modified = head.last_modified};
       }
-    } catch (const std::exception &) {
+    } catch (const std::exception &ex) {
+      (void)ex;
+      // Try the next replica; unavailable replicas should not fail HEAD.
     }
   }
 
@@ -211,7 +225,8 @@ http::Response applyHeadMetadata(App &app, std::string_view key) {
     return makeEmptyResponse(404);
   }
 
-  auto res = http::Response{.status = 200};
+  auto res = http::Response{};
+  res.status = 200;
   res.setHeader("Content-Length", metadata.size);
   res.setHeader("Accept-Ranges", "bytes");
   res.setHeader("x-amz-storage-class", "STANDARD");
@@ -416,8 +431,8 @@ bool App::deleteRecord(std::string_view key) {
 WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
   // Match the Go write flow: mark metadata SOFT before touching volumes so
   // readers never see a partially replicated object as live.
-  auto kvolumes = placement::key2volume(key, options_.volumes, options_.replicas,
-                                        options_.subvolumes);
+  auto kvolumes = placement::key2volume(key, options_.volumes,
+                                        options_.replicas, options_.subvolumes);
 
   auto pending = record::Record{kvolumes, record::Deleted::SOFT, ""};
   if (!putRecord(key, pending)) {
@@ -428,10 +443,11 @@ WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
   for (const auto &volume : kvolumes) {
     // Values are already materialized as a string_view here, unlike Go's
     // one-shot io.Reader, so each replica can reuse the same buffer.
-    const auto remote = "http://" + volume + keypath;
+    const auto remote = remoteUrl(volume, keypath);
     try {
       volume_client::remotePut(remote, value);
-    } catch (const std::exception &) {
+    } catch (const std::exception &ex) {
+      (void)ex;
       return {500, pending};
     }
   }
@@ -448,11 +464,12 @@ WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
   return {201, committed};
 }
 
-WriteResult App::writeFilesToReplicas(
-    std::string_view key, const std::vector<std::filesystem::path> &paths,
-    std::uint64_t content_length, std::string_view hash) {
-  auto kvolumes = placement::key2volume(key, options_.volumes, options_.replicas,
-                                        options_.subvolumes);
+WriteResult
+App::writeFilesToReplicas(std::string_view key,
+                          const std::vector<std::filesystem::path> &paths,
+                          std::uint64_t content_length, std::string_view hash) {
+  auto kvolumes = placement::key2volume(key, options_.volumes,
+                                        options_.replicas, options_.subvolumes);
 
   auto pending = record::Record{kvolumes, record::Deleted::SOFT, ""};
   if (!putRecord(key, pending)) {
@@ -461,10 +478,11 @@ WriteResult App::writeFilesToReplicas(
 
   auto keypath = placement::key2path(key);
   for (const auto &volume : kvolumes) {
-    const auto remote = "http://" + volume + keypath;
+    const auto remote = remoteUrl(volume, keypath);
     try {
       volume_client::remotePutFiles(remote, paths, content_length);
-    } catch (const std::exception &) {
+    } catch (const std::exception &ex) {
+      (void)ex;
       return {500, pending};
     }
   }
@@ -501,7 +519,7 @@ ReadResult App::readFromReplica(std::string_view key) {
     }
 
     result.status = 302;
-    result.redirect_url = "http://" + options_.fallback + toString(key);
+    result.redirect_url = remoteUrl(options_.fallback, key);
     return result;
   }
 
@@ -509,13 +527,12 @@ ReadResult App::readFromReplica(std::string_view key) {
     return result;
   }
 
-  const auto kvolumes = placement::key2volume(key, options_.volumes,
-                                              options_.replicas,
-                                              options_.subvolumes);
+  const auto kvolumes = placement::key2volume(
+      key, options_.volumes, options_.replicas, options_.subvolumes);
   result.key_volumes = joinVolumes(rec.rvolumes);
-  result.key_balance =
-      placement::needs_rebalance(rec.rvolumes, kvolumes) ? "unbalanced"
-                                                         : "balanced";
+  result.key_balance = placement::needs_rebalance(rec.rvolumes, kvolumes)
+                           ? "unbalanced"
+                           : "balanced";
 
   const auto keypath = placement::key2path(key);
   for (const auto index : replicaProbeOrder(rec.rvolumes.size())) {
@@ -524,7 +541,7 @@ ReadResult App::readFromReplica(std::string_view key) {
       continue;
     }
 
-    const auto remote = "http://" + volume + keypath;
+    const auto remote = remoteUrl(volume, keypath);
     try {
       // Original minikeyvalue probes volume servers before redirecting. This
       // avoids sending clients to a replica that is already known missing/down.
@@ -533,7 +550,8 @@ ReadResult App::readFromReplica(std::string_view key) {
         result.redirect_url = remote;
         return result;
       }
-    } catch (const std::exception &) {
+    } catch (const std::exception &ex) {
+      (void)ex;
     }
   }
 
@@ -569,10 +587,11 @@ DeleteResult App::deleteFromReplicas(std::string_view key, bool unlink) {
   const auto keypath = placement::key2path(key);
   auto delete_error = false;
   for (const auto &volume : rec.rvolumes) {
-    const auto remote = "http://" + volume + keypath;
+    const auto remote = remoteUrl(volume, keypath);
     try {
       volume_client::remoteDelete(remote);
-    } catch (const std::exception &) {
+    } catch (const std::exception &ex) {
+      (void)ex;
       delete_error = true;
     }
   }
@@ -653,7 +672,8 @@ QueryResult App::query(std::string_view key, std::string_view operation,
   return {.status = 200, .content_type = "application/json", .body = body};
 }
 
-QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const {
+QueryResult App::s3List(std::string_view bucket,
+                        std::string_view prefix) const {
   auto scan_prefix = toString(bucket);
   scan_prefix += "/";
   scan_prefix += prefix;
@@ -665,11 +685,12 @@ QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const 
     if (entry.record.deleted != record::Deleted::NO) {
       continue;
     }
-    const auto metadata =
-        objectMetadataFromReplicas(entry.record, entry.key, options_.volume_timeout);
+    const auto metadata = objectMetadataFromReplicas(entry.record, entry.key,
+                                                     options_.volume_timeout);
     ++key_count;
     contents << "<Contents><Key>"
-             << xmlEscape(std::string_view{entry.key}.substr(scan_prefix.size()))
+             << xmlEscape(
+                    std::string_view{entry.key}.substr(scan_prefix.size()))
              << "</Key>";
     if (!metadata.last_modified.empty()) {
       contents << "<LastModified>" << xmlEscape(metadata.last_modified)
@@ -695,8 +716,7 @@ QueryResult App::s3List(std::string_view bucket, std::string_view prefix) const 
        << "<Prefix>" << xmlEscape(prefix) << "</Prefix>"
        << "<KeyCount>" << key_count << "</KeyCount>"
        << "<MaxKeys>1000</MaxKeys>"
-       << "<IsTruncated>false</IsTruncated>"
-       << contents.str()
+       << "<IsTruncated>false</IsTruncated>" << contents.str()
        << "</ListBucketResult>";
 
   return {.status = 200, .content_type = "application/xml", .body = body.str()};
@@ -768,7 +788,7 @@ int App::abortMultipartUpload(std::string_view upload_id) {
   auto lock = std::scoped_lock{multipart_mutex_};
   cleanupExpiredMultipartUploadsLocked(std::chrono::steady_clock::now());
   const auto upload = toString(upload_id);
-  if (!upload_ids_.erase(upload)) {
+  if (upload_ids_.erase(upload) == 0) {
     return 404;
   }
 
@@ -776,9 +796,9 @@ int App::abortMultipartUpload(std::string_view upload_id) {
   return 204;
 }
 
-MultipartUploadResult App::completeMultipartUpload(
-    std::string_view key, std::string_view upload_id,
-    const std::vector<int> &part_numbers) {
+MultipartUploadResult
+App::completeMultipartUpload(std::string_view key, std::string_view upload_id,
+                             const std::vector<int> &part_numbers) {
   if (getRecord(key).deleted == record::Deleted::NO) {
     return {.status = 403, .upload_id = "", .etag = "", .body = ""};
   }
@@ -812,7 +832,8 @@ MultipartUploadResult App::completeMultipartUpload(
 
   const auto hash = md5_hex_files(part_paths);
   const auto etag = "\"" + hash + "\"";
-  const auto result = writeFilesToReplicas(key, part_paths, content_length, hash);
+  const auto result =
+      writeFilesToReplicas(key, part_paths, content_length, hash);
   if (result.status != 201) {
     return {.status = result.status, .upload_id = "", .etag = "", .body = ""};
   }
@@ -907,7 +928,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
   if (req.method == "GET") {
     if (req.getParamValue("list-type") == "2") {
       const auto result = app.s3List(req.path, req.getParamValue("prefix"));
-      auto res = http::Response{.status = result.status};
+      auto res = http::Response{};
+      res.status = result.status;
       res.setContent(result.body, result.content_type);
       return res;
     }
@@ -917,7 +939,7 @@ http::Response handleRequest(App &app, const http::Request &req) {
       const auto result =
           app.query(req.path, operation, req.getParamValue("start"),
                     req.getParamValue("limit"));
-      auto res = http::Response{.status = result.status};
+      auto res = http::Response{};
       res.status = result.status;
       if (!result.content_type.empty()) {
         res.setHeader("Content-Type", result.content_type);
@@ -965,9 +987,9 @@ http::Response handleRequest(App &app, const http::Request &req) {
         return makeEmptyResponse(403);
       }
 
-      auto res = makeEmptyResponse(app.writeMultipartPart(
-          req.getParamValue("uploadId"), static_cast<int>(parsed_part_number),
-          body));
+      auto res = makeEmptyResponse(
+          app.writeMultipartPart(req.getParamValue("uploadId"),
+                                 static_cast<int>(parsed_part_number), body));
       if (res.status == 200) {
         res.setHeader("ETag", quotedEtag(body));
       }
@@ -992,7 +1014,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
     const auto operation = firstQueryOperation(req);
     if (operation == "uploads") {
       const auto result = app.createMultipartUpload(req.path);
-      auto res = http::Response{.status = result.status};
+      auto res = http::Response{};
+      res.status = result.status;
       if (!result.body.empty()) {
         res.setContent(result.body, "application/xml");
       } else {
@@ -1013,10 +1036,10 @@ http::Response handleRequest(App &app, const http::Request &req) {
     if (!req.getParamValue("uploadId").empty()) {
       try {
         const auto parts = parseS3MultipartPartNumbers(req.body);
-        const auto result =
-            app.completeMultipartUpload(req.path, req.getParamValue("uploadId"),
-                                        parts);
-        auto res = http::Response{.status = result.status};
+        const auto result = app.completeMultipartUpload(
+            req.path, req.getParamValue("uploadId"), parts);
+        auto res = http::Response{};
+        res.status = result.status;
         if (!result.body.empty()) {
           res.setContent(result.body, "application/xml");
           if (!result.etag.empty()) {
@@ -1045,7 +1068,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
           app.abortMultipartUpload(req.getParamValue("uploadId")));
     }
 
-    const auto result = app.deleteFromReplicas(req.path, req.method == "UNLINK");
+    const auto result =
+        app.deleteFromReplicas(req.path, req.method == "UNLINK");
     return makeEmptyResponse(result.status);
   }
 
@@ -1062,9 +1086,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
 }
 
 void registerRoutes(http::Server &server, App &app) {
-  server.setHandler([&app](const http::Request &req) {
-    return handleRequest(app, req);
-  });
+  server.setHandler(
+      [&app](const http::Request &req) { return handleRequest(app, req); });
 }
 
 } // namespace minikv::server

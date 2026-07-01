@@ -17,8 +17,11 @@ namespace {
 
 constexpr auto kProbeTimeout = std::chrono::minutes{1};
 
-std::string toString(std::string_view value) {
-  return std::string{value.data(), value.size()};
+std::string remoteUrl(std::string_view volume, std::string_view key_path) {
+  auto remote = std::string{"http://"};
+  remote += volume;
+  remote += key_path;
+  return remote;
 }
 
 bool contains(const std::vector<std::string> &values,
@@ -31,7 +34,7 @@ existingRecordedVolumes(std::string_view key_path,
                         const std::vector<std::string> &recorded_volumes) {
   auto real_volumes = std::vector<std::string>{};
   for (const auto &volume : recorded_volumes) {
-    const auto remote = "http://" + volume + toString(key_path);
+    const auto remote = remoteUrl(volume, key_path);
     try {
       if (volume_client::remoteHead(remote, kProbeTimeout)) {
         real_volumes.push_back(volume);
@@ -50,7 +53,7 @@ bool readFromAnyRealVolume(std::string_view key_path,
                            const std::vector<std::string> &real_volumes,
                            std::string &body) {
   for (const auto &volume : real_volumes) {
-    const auto remote = "http://" + volume + toString(key_path);
+    const auto remote = remoteUrl(volume, key_path);
     try {
       body = volume_client::remoteGet(remote).body;
       return true;
@@ -92,9 +95,8 @@ staleRealVolumes(const std::vector<std::string> &real_volumes,
 bool rebalanceObject(index::LevelDbIndex &index, const Options &options,
                      std::string_view key,
                      const std::vector<std::string> &recorded_volumes) {
-  const auto target_volumes =
-      placement::key2volume(key, options.volumes, options.replicas,
-                            options.subvolumes);
+  const auto target_volumes = placement::key2volume(
+      key, options.volumes, options.replicas, options.subvolumes);
   return rebalanceObjectToTargets(index, key, recorded_volumes, target_volumes);
 }
 
@@ -126,8 +128,9 @@ bool rebalanceObjectToTargets(index::LevelDbIndex &index, std::string_view key,
   }
 
   auto write_error = false;
-  for (const auto &volume : missingTargetVolumes(real_volumes, target_volumes)) {
-    const auto remote = "http://" + volume + key_path;
+  for (const auto &volume :
+       missingTargetVolumes(real_volumes, target_volumes)) {
+    const auto remote = remoteUrl(volume, key_path);
     try {
       volume_client::remotePut(remote, body);
     } catch (const std::exception &err) {
@@ -140,15 +143,15 @@ bool rebalanceObjectToTargets(index::LevelDbIndex &index, std::string_view key,
     return false;
   }
 
-  if (!index.putRecord(key, record::Record{target_volumes, record::Deleted::NO,
-                                           ""})) {
+  if (!index.putRecord(
+          key, record::Record{target_volumes, record::Deleted::NO, ""})) {
     std::cerr << "rebalance put db error " << key << '\n';
     return false;
   }
 
   auto delete_error = false;
   for (const auto &volume : staleRealVolumes(real_volumes, target_volumes)) {
-    const auto remote = "http://" + volume + key_path;
+    const auto remote = remoteUrl(volume, key_path);
     try {
       volume_client::remoteDelete(remote);
     } catch (const std::exception &err) {

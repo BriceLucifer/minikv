@@ -14,6 +14,28 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(MINIKV_BUILD_TESTS "Build minikv tests" ON)
 
+function(minikv_enable_project_warnings target)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    target_compile_options(${target}
+      PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      target_compile_options(${target}
+        PRIVATE
+          -Wmissing-designated-field-initializers
+      )
+    endif()
+  elseif(MSVC)
+    target_compile_options(${target}
+      PRIVATE
+        /W4
+    )
+  endif()
+endfunction()
+
 set(LEVELDB_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(LEVELDB_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(LEVELDB_INSTALL OFF CACHE BOOL "" FORCE)
@@ -67,6 +89,7 @@ target_include_directories(mkv_core
 )
 
 target_compile_features(mkv_core PUBLIC cxx_std_23)
+minikv_enable_project_warnings(mkv_core)
 
 target_link_libraries(mkv_core
   PUBLIC
@@ -88,6 +111,7 @@ target_link_libraries(mkv
 )
 
 target_compile_features(mkv PRIVATE cxx_std_23)
+minikv_enable_project_warnings(mkv)
 
 if(MINIKV_BUILD_TESTS)
   include(CTest)
