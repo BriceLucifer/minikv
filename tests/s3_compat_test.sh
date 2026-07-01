@@ -50,6 +50,9 @@ require_command curl
 require_command python3
 
 python3 "$PY_TEST" --check-deps
+if [[ "${MINIKV_REQUIRE_S3_COMPAT_DEPS:-}" == "1" ]]; then
+  python3 "$PY_TEST" --require-deps
+fi
 
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/minikv-s3-compat.XXXXXX")
 VOLUME_ROOT="$ROOT/volume"

@@ -39,6 +39,18 @@ def print_dependency_status():
     print(f"pyarrow: {'available' if pyarrow is not None else 'missing'}")
 
 
+def require_dependency_status():
+    missing = []
+    if boto3 is None:
+        missing.append("boto3")
+    if pyarrow is None:
+        missing.append("pyarrow")
+    if missing:
+        raise RuntimeError(
+            "missing required S3 compatibility dependencies: " + ", ".join(missing)
+        )
+
+
 @unittest.skipIf(boto3 is None, "boto3 is not installed")
 class TestS3Boto(unittest.TestCase):
     @classmethod
@@ -156,4 +168,9 @@ if __name__ == "__main__":
     if "--check-deps" in sys.argv:
         print_dependency_status()
         sys.exit(0)
+    if "--require-deps" in sys.argv:
+        require_dependency_status()
+        sys.exit(0)
+    if os.environ.get("MINIKV_REQUIRE_S3_COMPAT_DEPS") == "1":
+        require_dependency_status()
     unittest.main(verbosity=2)

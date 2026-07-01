@@ -174,6 +174,20 @@ checks. If `boto3` or `pyarrow` are not installed, those suites are reported as
 skipped rather than failing the core build. Set `MINIKV_RUN_LARGE_S3_COMPAT=1`
 to include the larger multipart parquet roundtrip.
 
+For a strict environment where missing boto3/PyArrow should fail the test
+instead of skipping it:
+
+```bash
+MINIKV_REQUIRE_S3_COMPAT_DEPS=1 \
+  ctest --preset debug -R S3CompatTest --output-on-failure
+```
+
+Check dependency availability without starting the local topology:
+
+```bash
+python3 tests/s3_compat_test.py --check-deps
+```
+
 ## Run With nginx Volumes
 
 This rewrite keeps the original minikeyvalue storage model: the master is C++,
