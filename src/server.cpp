@@ -555,6 +555,10 @@ int App::writeMultipartPart(std::string_view upload_id, int part_number,
 MultipartUploadResult App::completeMultipartUpload(
     std::string_view key, std::string_view upload_id,
     const std::vector<int> &part_numbers) {
+  if (getRecord(key).deleted == record::Deleted::NO) {
+    return {.status = 403, .upload_id = "", .body = ""};
+  }
+
   {
     auto lock = std::scoped_lock{multipart_mutex_};
     if (!upload_ids_.contains(toString(upload_id))) {

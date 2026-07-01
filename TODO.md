@@ -32,6 +32,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     delete for bucket child keys.
   - S3-compatible multipart upload routes: `POST ?uploads`, `PUT
     ?partNumber=&uploadId=`, and `POST ?uploadId=`.
+  - Multipart completion now rechecks overwrite protection, so an upload
+    initialized before another writer creates the key cannot replace the live
+    object.
   - Multipart scratch cleanup on startup and retryable completion when a part
     is missing.
   - HTTP adapter edge coverage for HEAD responses with non-zero
@@ -42,7 +45,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `83/83 tests passed`
+  - `ctest --preset debug` with `85/85 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -79,6 +82,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   nginx/WebDAV volumes.
 - S3-compatible multipart upload with per-DB namespaced temporary part files
   and nginx/WebDAV smoke coverage.
+- Multipart route tests cover completion-time overwrite rejection and lock
+  conflicts for init, part upload, and completion.
 - Multipart startup cleanup removes stale scratch files left by previous
   processes, and failed completion due to missing parts keeps the upload id
   usable for retry.
@@ -93,8 +98,6 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 1. Broaden upstream parity checks.
    - Compare C++ behavior against upstream `tools/s3test.py`.
-   - Add route-level tests for multipart overwrite and conflict locking under
-     concurrent clients.
 2. Improve production durability around multipart uploads.
    - Add time-based expiry for abandoned multipart uploads in a running
      process.

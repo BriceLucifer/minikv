@@ -1411,6 +1411,150 @@ TEST(ServerAppTest, MultipartScratchDirectoryIsCleanedAtStartup) {
   cleanup();
 }
 
+TEST(ServerRouteTest, S3MultipartCompleteRejectsObjectMadeLiveAfterInit) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-multipart-complete-existing");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    auto multipart_path = options.db_path;
+    multipart_path += ".multipart";
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto init = client.Post("/bucket/object?uploads", "");
+    ASSERT_TRUE(init);
+    ASSERT_EQ(init->status, 200);
+    const auto upload_id = xmlValue(init->body, "UploadId");
+    ASSERT_FALSE(upload_id.empty());
+
+    const auto part =
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
+                   "stale multipart body", "application/octet-stream");
+    ASSERT_TRUE(part);
+    ASSERT_EQ(part->status, 200);
+
+    ASSERT_TRUE(app.putRecord(
+        "/bucket/object",
+        minikv::record::Record{
+            .rvolumes = {volume.volume()},
+            .deleted = minikv::record::Deleted::NO,
+            .hash = "5d41402abc4b2a76b9719d911017c592",
+        }));
+
+    const auto complete_xml =
+        std::string{"<CompleteMultipartUpload>"
+                    "<Part><PartNumber>1</PartNumber></Part>"
+                    "</CompleteMultipartUpload>"};
+    const auto complete =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+
+    ASSERT_TRUE(complete);
+    EXPECT_EQ(complete->status, 403);
+    EXPECT_TRUE(complete->body.empty());
+    EXPECT_FALSE(remote_put_called);
+
+    const auto rec = app.getRecord("/bucket/object");
+    EXPECT_EQ(rec.deleted, minikv::record::Deleted::NO);
+    EXPECT_EQ(rec.rvolumes, (std::vector<std::string>{volume.volume()}));
+    EXPECT_EQ(rec.hash, "5d41402abc4b2a76b9719d911017c592");
+  }
+
+  cleanup();
+}
+
+TEST(ServerRouteTest, S3MultipartRoutesRespectWriteLocks) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-s3-multipart-locks");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  const auto cleanup = [&] {
+    std::filesystem::remove_all(options.db_path);
+    auto multipart_path = options.db_path;
+    multipart_path += ".multipart";
+    std::filesystem::remove_all(multipart_path);
+  };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+
+    ASSERT_TRUE(app.lockKey("/bucket/object"));
+    const auto locked_init = client.Post("/bucket/object?uploads", "");
+    app.unlockKey("/bucket/object");
+    ASSERT_TRUE(locked_init);
+    EXPECT_EQ(locked_init->status, 409);
+
+    const auto init = client.Post("/bucket/object?uploads", "");
+    ASSERT_TRUE(init);
+    ASSERT_EQ(init->status, 200);
+    const auto upload_id = xmlValue(init->body, "UploadId");
+    ASSERT_FALSE(upload_id.empty());
+
+    ASSERT_TRUE(app.lockKey("/bucket/object1"));
+    const auto locked_part =
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
+                   "hello", "application/octet-stream");
+    app.unlockKey("/bucket/object1");
+    ASSERT_TRUE(locked_part);
+    EXPECT_EQ(locked_part->status, 409);
+
+    const auto part =
+        client.Put("/bucket/object?partNumber=1&uploadId=" + upload_id,
+                   "hello", "application/octet-stream");
+    ASSERT_TRUE(part);
+    ASSERT_EQ(part->status, 200);
+
+    const auto complete_xml =
+        std::string{"<CompleteMultipartUpload>"
+                    "<Part><PartNumber>1</PartNumber></Part>"
+                    "</CompleteMultipartUpload>"};
+    ASSERT_TRUE(app.lockKey("/bucket/object"));
+    const auto locked_complete =
+        client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
+    app.unlockKey("/bucket/object");
+    ASSERT_TRUE(locked_complete);
+    EXPECT_EQ(locked_complete->status, 409);
+    EXPECT_FALSE(remote_put_called);
+    EXPECT_EQ(app.getRecord("/bucket/object").deleted,
+              minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
 TEST(ServerRouteTest, UnlinkRouteSoftDeletesWithoutTouchingRemoteObjects) {
   auto remote_delete_called = false;
 
