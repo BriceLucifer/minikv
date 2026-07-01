@@ -22,6 +22,24 @@ Example agent artifact keys:
 /runs/abc/artifacts/result.zip
 ```
 
+For an AI agent memory stack, use this service as the durable blob/artifact
+layer rather than the semantic index itself:
+
+```text
+Postgres/SQLite  run metadata, ownership, retention, lineage
+Vector DB        embeddings and semantic retrieval
+minikv           raw bytes: traces, screenshots, prompts, outputs, datasets
+```
+
+The key contract should be deterministic and append-friendly. Examples:
+
+```text
+/agents/{agent_id}/runs/{run_id}/trace.jsonl
+/agents/{agent_id}/runs/{run_id}/screenshots/0001.png
+/agents/{agent_id}/memory/{memory_id}/source.bin
+/datasets/{dataset_id}/shards/{shard_id}.parquet
+```
+
 Example API usage:
 
 ```bash
@@ -220,6 +238,48 @@ MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 \
 deploy topology with five nginx/WebDAV volumes and one master. It covers the
 original HTTP API: writes, redirects, deletes, range requests, HEAD metadata,
 large objects, JSON listing, empty-body rejection, and `Content-Md5`.
+
+## Upstream Parity Status
+
+This rewrite is functionally aligned with upstream `geohot/minikeyvalue` at
+commit `451d248` for the main operational surface:
+
+- Original HTTP API: `GET`, `PUT`, `DELETE`, `UNLINK`, `REBALANCE`, `?list`,
+  `?unlinked`, range reads through nginx redirects, duplicate write/delete
+  behavior, empty-body rejection, and `Content-Md5`.
+- Storage topology: one master with LevelDB metadata, external nginx/WebDAV
+  volume servers, simple filesystem blob layout, rebuild from volume files,
+  and rebalance across changed preferred volume sets.
+- CLI shape: `server`, `rebuild`, and `rebalance` commands with Go-style flags
+  for database path, volumes, replicas, subvolumes, fallback, protect mode,
+  MD5, and volume timeout.
+- S3 subset: list, bulk delete, multipart upload, boto3 write/list/delete, the
+  upstream redirect limitation for boto3 `get_object`, and PyArrow
+  file-info/list/delete/parquet workflows.
+
+The C++ rewrite is intentionally stronger than upstream in several places:
+
+- Bounded worker pool instead of one thread per accepted connection.
+- Timeout-aware remote volume client operations.
+- S3 `HEAD` returns direct object metadata while `GET` keeps upstream's 302
+  redirect model.
+- S3 list entries include `Size`, `ETag`, `LastModified`, and `StorageClass`.
+- AWS SDK `aws-chunked` request bodies are decoded before replica writes.
+- Multipart scratch space is per database path, cleaned at startup, can expire
+  while the process is running, and multipart completion streams part files to
+  replicas instead of first building one full object string.
+- Production templates are provided for systemd master and nginx volume
+  services.
+
+Known remaining gaps before calling the rewrite production-complete:
+
+- S3 error responses are still minimal HTTP statuses, not AWS-compatible XML
+  error documents.
+- There is no checked-in benchmark report yet for the five-volume topology.
+- Operational guidance exists, but backup/restore drills, monitoring metrics,
+  and capacity/retention policy examples still need concrete runbooks.
+- Authentication and TLS are expected to sit in front of the service; they are
+  not built into the master.
 
 ## Run With nginx Volumes
 

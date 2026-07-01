@@ -6,6 +6,19 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 - Current direction: keep the original architecture of C++ master plus external
   nginx/WebDAV volume servers. Do not replace nginx with a C++ volume server.
+- Latest upstream comparison point: `geohot/minikeyvalue` commit `451d248`
+  (`make rebalance more robust (#40)`).
+- Current parity summary:
+  - Core upstream HTTP behavior is covered by `UpstreamCompatTest`, a real
+    `requests` harness modeled after upstream `tools/test.py`.
+  - Core S3 behavior is covered by `S3CompatTest`, a real boto3/PyArrow harness
+    modeled after upstream `tools/s3test.py`.
+  - The C++ rewrite is now ahead of upstream for S3 metadata, AWS chunked
+    upload compatibility, runtime multipart cleanup, streaming multipart
+    completion, deploy templates, and bounded worker execution.
+  - Remaining production-complete gaps are benchmark evidence, AWS-style S3 XML
+    errors, and concrete backup/restore/monitoring/capacity runbooks for an AI
+    agent memory deployment.
 - Recently completed work includes:
   - Upstream README parity review for the core API, nginx volume model,
     rebuild/rebalance workflow, and S3 compatibility subset.
@@ -163,12 +176,23 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 ## Next
 
-1. Broaden upstream parity checks.
-   - Compare the local harness against upstream `tools/s3test.py` whenever
-     upstream changes.
-2. Add production benchmark evidence.
+1. Add production benchmark evidence.
    - Run a repeatable deploy benchmark against the five-volume topology for
      PUT/GET/DELETE throughput, MiB/s, latency percentiles, and error counts.
+   - Record release-build hardware, object size mix, replica count, worker
+     count, and disk path in README/TODO so results are comparable later.
+2. Improve S3 error compatibility.
+   - Return AWS-style XML error bodies for common S3 failures:
+     `NoSuchKey`, `NoSuchBucket`-style path misses where applicable,
+     `AccessDenied`/overwrite rejection, malformed XML, invalid part number,
+     unknown upload id, and missing multipart parts.
+3. Add AI-agent memory operations runbooks.
+   - Document key naming, retention, lifecycle cleanup, backup/restore drills,
+     rebuild/rebalance procedures, and recommended external metadata/vector DB
+     integration.
+4. Keep upstream parity checks current.
+   - Compare local HTTP/S3 harnesses against upstream `tools/test.py` and
+     `tools/s3test.py` whenever upstream changes.
 
 ## Remaining Capability Gaps
 
@@ -180,6 +204,10 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - The C++ adapter now uses bounded server workers and timeout-aware async
     client operations, but it is not yet tuned like Go's `net/http` stack for
     high concurrency.
+- AI agent memory foundation:
+  - The README describes using minikv for raw artifacts alongside a metadata DB
+    and vector DB, but there is not yet a concrete lifecycle/retention,
+    backup/restore, or monitoring runbook.
 
 ## Useful Commands
 
