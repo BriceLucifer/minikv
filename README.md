@@ -236,6 +236,46 @@ deploy topology with five nginx/WebDAV volumes and one master. It covers the
 original HTTP API: writes, redirects, deletes, range requests, HEAD metadata,
 large objects, JSON listing, empty-body rejection, and `Content-Md5`.
 
+### Test Artifacts And Cleanup
+
+Most C++ tests are self-contained, but the deploy-style shell tests create
+real localhost services and temporary filesystem roots:
+
+- `NginxSmokeTest` creates `${TMPDIR:-/tmp}/minikv-nginx-smoke.*`, starts
+  nginx volume servers, then starts a local `mkv server`.
+- `S3CompatTest` creates `${TMPDIR:-/tmp}/minikv-s3-compat.*`, starts five
+  nginx/WebDAV volume servers, then starts one local master.
+- `UpstreamCompatTest` creates `${TMPDIR:-/tmp}/minikv-upstream-compat.*`,
+  starts the same five-volume topology, then runs the Python upstream client
+  checks.
+
+These scripts install EXIT traps that kill their nginx/master processes and
+remove their temporary roots. If a test is interrupted very early, killed with
+`SIGKILL`, or fails before the trap is installed, those directories can be left
+behind. On macOS they usually appear under the per-user `$TMPDIR`, for example
+`/private/var/folders/.../T/`, not necessarily under `/tmp`.
+
+Check for leftovers with:
+
+```bash
+find "${TMPDIR:-/tmp}" /tmp -maxdepth 1 \
+  \( -name 'minikv-nginx-smoke.*' \
+     -o -name 'minikv-s3-compat.*' \
+     -o -name 'minikv-upstream-compat.*' \
+     -o -name 'minikv-index-test' \
+     -o -name 'minikv-rebuild-test' \
+     -o -name 'minikv-rebalance-test' \
+     -o -name 'minikv-server-test' \
+     -o -name 'minikv-remote-put-files-test' \) \
+  -print
+```
+
+Remove those temporary roots with the same `find` command plus `-exec rm -rf
+{} +` after reviewing the printed paths. The repository-local `.venv` and
+`.cache/uv` directories are Python dependency caches created by
+`tests/ensure_python_test_env.sh`; keep them unless you intentionally want to
+force a fresh dependency sync.
+
 ## Upstream Parity Status
 
 This rewrite is functionally aligned with upstream `geohot/minikeyvalue` at
