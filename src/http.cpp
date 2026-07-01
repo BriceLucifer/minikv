@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -136,6 +137,24 @@ ParsedUrl parseHttpUrl(std::string_view url) {
   }
 
   return {host, port, target};
+}
+
+template <typename Future, typename Cancel>
+void waitForOperation(asio::io_context &ioc, Future &future,
+                      std::chrono::milliseconds timeout, Cancel cancel) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (future.wait_for(std::chrono::milliseconds{0}) !=
+         std::future_status::ready) {
+    ioc.restart();
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      cancel();
+      ioc.restart();
+      ioc.run();
+      throw std::runtime_error("http request timed out");
+    }
+    ioc.run_for(deadline - now);
+  }
 }
 
 Request fromBeastRequest(const bhttp::request<bhttp::string_body> &req) {
@@ -423,10 +442,18 @@ ClientResponse request(std::string_view method, std::string_view url,
   auto ioc = asio::io_context{};
   auto resolver = tcp::resolver{ioc};
   auto stream = beast::tcp_stream{ioc};
-  stream.expires_after(timeout);
 
-  const auto endpoints = resolver.resolve(parsed.host, parsed.port);
-  stream.connect(endpoints);
+  auto resolve_future =
+      resolver.async_resolve(parsed.host, parsed.port, asio::use_future);
+  waitForOperation(ioc, resolve_future, timeout, [&resolver] {
+    resolver.cancel();
+  });
+  const auto endpoints = resolve_future.get();
+
+  stream.expires_after(timeout);
+  auto connect_future = stream.async_connect(endpoints, asio::use_future);
+  waitForOperation(ioc, connect_future, timeout, [&stream] { stream.cancel(); });
+  connect_future.get();
 
   auto req = bhttp::request<bhttp::string_body>{};
   req.version(11);
@@ -440,14 +467,21 @@ ClientResponse request(std::string_view method, std::string_view url,
   }
   req.prepare_payload();
 
-  bhttp::write(stream, req);
+  stream.expires_after(timeout);
+  auto write_future = bhttp::async_write(stream, req, asio::use_future);
+  waitForOperation(ioc, write_future, timeout, [&stream] { stream.cancel(); });
+  write_future.get();
 
   auto buffer = beast::flat_buffer{};
   auto out = ClientResponse{};
   if (lowercase(method) == "head") {
     auto parser = bhttp::response_parser<bhttp::empty_body>{};
     parser.skip(true);
-    bhttp::read(stream, buffer, parser);
+    stream.expires_after(timeout);
+    auto read_future =
+        bhttp::async_read(stream, buffer, parser, asio::use_future);
+    waitForOperation(ioc, read_future, timeout, [&stream] { stream.cancel(); });
+    read_future.get();
     const auto &res = parser.get();
     out.status = static_cast<int>(res.result_int());
     for (const auto &field : res.base()) {
@@ -455,7 +489,10 @@ ClientResponse request(std::string_view method, std::string_view url,
     }
   } else {
     auto res = bhttp::response<bhttp::string_body>{};
-    bhttp::read(stream, buffer, res);
+    stream.expires_after(timeout);
+    auto read_future = bhttp::async_read(stream, buffer, res, asio::use_future);
+    waitForOperation(ioc, read_future, timeout, [&stream] { stream.cancel(); });
+    read_future.get();
     out.status = static_cast<int>(res.result_int());
     out.body = res.body();
     for (const auto &field : res.base()) {

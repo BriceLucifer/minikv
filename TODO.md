@@ -35,12 +35,14 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - Multipart scratch cleanup on startup and retryable completion when a part
     is missing.
   - HTTP adapter edge coverage for HEAD responses with non-zero
-    `Content-Length`, percent-decoded paths/query strings, and custom methods.
+    `Content-Length`, percent-decoded paths/query strings, duplicate query
+    keys, malformed percent escapes, stalled response timeouts, and custom
+    methods.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `80/80 tests passed`
+  - `ctest --preset debug` with `83/83 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -81,21 +83,19 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   processes, and failed completion due to missing parts keeps the upload id
   usable for retry.
 - HTTP adapter tests cover nginx-style HEAD responses with non-zero
-  `Content-Length`, percent decoding for path/query parameters, and custom
+  `Content-Length`, percent decoding for path/query parameters, duplicate
+  query keys, malformed percent escapes, stalled response timeouts, and custom
   method forwarding.
 - Master executable entry point with Go-style server flags.
 - CMake presets use Ninja and 24-way parallel build jobs on this machine.
 
 ## Next
 
-1. Tighten HTTP adapter behavior against real clients.
-   - Add tests for duplicate query keys and malformed percent escapes.
-   - Add tests for client timeout behavior against slow or stalled servers.
-2. Broaden upstream parity checks.
+1. Broaden upstream parity checks.
    - Compare C++ behavior against upstream `tools/s3test.py`.
    - Add route-level tests for multipart overwrite and conflict locking under
      concurrent clients.
-3. Improve production durability around multipart uploads.
+2. Improve production durability around multipart uploads.
    - Add time-based expiry for abandoned multipart uploads in a running
      process.
    - Stream large multipart completion to replicas instead of concatenating the
@@ -107,9 +107,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - Current multipart support matches the upstream route shape but does not yet
     expose full AWS S3 response metadata, ETags, or abort-multipart handling.
 - Operational parity:
-  - The C++ adapter is synchronous and intentionally small; it is functional
-    for current tests but not yet tuned like Go's `net/http` server for high
-    concurrency.
+  - The C++ adapter now uses bounded server workers and timeout-aware async
+    client operations, but it is not yet tuned like Go's `net/http` stack for
+    high concurrency.
 
 ## Useful Commands
 

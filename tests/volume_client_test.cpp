@@ -202,6 +202,58 @@ TEST(HttpAdapterTest, PercentDecodesPathAndQueryParameters) {
     EXPECT_EQ(res.body, "ok");
 }
 
+TEST(HttpAdapterTest, DuplicateQueryKeysKeepFirstValueLikeGo) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{};
+        EXPECT_EQ(req.path, "/bucket");
+        EXPECT_EQ(req.getParamValue("prefix"), "first");
+        res.setContent("ok", "text/plain");
+        return res;
+    });
+    local.start();
+
+    const auto res =
+        minikv::http::request("GET", local.url("/bucket?prefix=first&prefix=second"));
+
+    EXPECT_EQ(res.status, 200);
+    EXPECT_EQ(res.body, "ok");
+}
+
+TEST(HttpAdapterTest, MalformedPercentEscapesRemainLiteral) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request& req) {
+        auto res = minikv::http::Response{};
+        EXPECT_EQ(req.path, "/bad%ZZ/path%");
+        EXPECT_EQ(req.getParamValue("key"), "value%QQ");
+        res.setContent("ok", "text/plain");
+        return res;
+    });
+    local.start();
+
+    const auto res =
+        minikv::http::request("GET", local.url("/bad%ZZ/path%?key=value%QQ"));
+
+    EXPECT_EQ(res.status, 200);
+    EXPECT_EQ(res.body, "ok");
+}
+
+TEST(HttpAdapterTest, ClientReadTimeoutThrowsForStalledResponse) {
+    LocalHttpServer local;
+    local.setHandler([](const minikv::http::Request&) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{200});
+        auto res = minikv::http::Response{};
+        res.setContent("too late", "text/plain");
+        return res;
+    });
+    local.start();
+
+    EXPECT_THROW(
+        minikv::http::request("GET", local.url("/slow"), {}, "application/octet-stream",
+                              std::chrono::milliseconds{20}),
+        std::exception);
+}
+
 TEST(HttpAdapterTest, CustomMethodsReachServerHandler) {
     LocalHttpServer local;
     local.setHandler([](const minikv::http::Request& req) {
