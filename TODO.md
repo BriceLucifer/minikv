@@ -9,6 +9,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - Recently completed work includes:
   - Upstream README parity review for the core API, nginx volume model,
     rebuild/rebalance workflow, and S3 compatibility subset.
+  - Optional upstream-style Python S3 compatibility harness for real
+    boto3/PyArrow clients, wired into CTest with dependency-aware skips.
   - Go-style CLI parsing and `mkv server` executable entry point.
   - GET/HEAD behavior closer to Go: fallback redirects, `Content-Md5`,
     `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing.
@@ -50,8 +52,10 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
+  - `python3 tests/s3_compat_test.py` with `7/7 tests skipped` because boto3
+    and PyArrow are not installed on this machine.
   - `cmake --build --preset debug`
-  - `ctest --preset debug` with `87/87 tests passed`
+  - `ctest --preset debug` with `88/88 tests passed`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -84,6 +88,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   target volumes, updates LevelDB metadata, and deletes stale replicas.
 - nginx/WebDAV end-to-end CTest smoke test, including rebuild recovery and
   rebalance migration.
+- S3 compatibility CTest wrapper starts temporary nginx volumes and a C++
+  master, then runs upstream-style boto3/PyArrow Python tests when those
+  optional dependencies are installed.
 - S3-compatible XML listing and bulk delete smoke coverage against real
   nginx/WebDAV volumes.
 - S3 list responses include per-object `Size` and `ETag` metadata from
@@ -110,8 +117,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 ## Next
 
 1. Broaden upstream parity checks.
-   - Compare C++ behavior against upstream `tools/s3test.py` with real
-     boto3/PyArrow clients.
+   - Install boto3/PyArrow in the verification environment and run
+     `S3CompatTest` without dependency skips.
 2. Improve production durability around multipart uploads.
    - Add time-based expiry for abandoned multipart uploads in a running
      process.

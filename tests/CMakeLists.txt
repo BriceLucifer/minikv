@@ -38,3 +38,11 @@ add_test(
   NAME NginxSmokeTest
   COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/nginx_smoke_test.sh $<TARGET_FILE:mkv>
 )
+
+add_test(
+  NAME S3CompatTest
+  COMMAND bash
+          ${CMAKE_CURRENT_SOURCE_DIR}/s3_compat_test.sh
+          $<TARGET_FILE:mkv>
+          ${CMAKE_CURRENT_SOURCE_DIR}/s3_compat_test.py
+)
