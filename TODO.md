@@ -11,6 +11,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     rebuild/rebalance workflow, and S3 compatibility subset.
   - Optional upstream-style Python S3 compatibility harness for real
     boto3/PyArrow clients, wired into CTest with dependency-aware skips.
+  - S3 compatibility harness documents and reports optional boto3/PyArrow
+    dependency status before running client tests.
   - Go-style CLI parsing and `mkv server` executable entry point.
   - GET/HEAD behavior closer to Go: fallback redirects, `Content-Md5`,
     `Key-Volumes`, `Key-Balance`, and random replica `HEAD` probing.
@@ -91,6 +93,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 - S3 compatibility CTest wrapper starts temporary nginx volumes and a C++
   master, then runs upstream-style boto3/PyArrow Python tests when those
   optional dependencies are installed.
+- README documents how to run `S3CompatTest`, why missing boto3/PyArrow suites
+  are skipped, and how to enable the larger multipart parquet roundtrip.
 - S3-compatible XML listing and bulk delete smoke coverage against real
   nginx/WebDAV volumes.
 - S3 list responses include per-object `Size` and `ETag` metadata from

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import binascii
 import os
+import sys
 import unittest
 
 
@@ -31,6 +32,11 @@ def s3_endpoint():
 def pyarrow_endpoint_override():
     endpoint = s3_endpoint()
     return endpoint.removeprefix("http://").removeprefix("https://")
+
+
+def print_dependency_status():
+    print(f"boto3: {'available' if boto3 is not None else 'missing'}")
+    print(f"pyarrow: {'available' if pyarrow is not None else 'missing'}")
 
 
 @unittest.skipIf(boto3 is None, "boto3 is not installed")
@@ -147,4 +153,7 @@ class TestS3PyArrow(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if "--check-deps" in sys.argv:
+        print_dependency_status()
+        sys.exit(0)
     unittest.main(verbosity=2)

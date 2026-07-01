@@ -49,6 +49,8 @@ require_command nginx
 require_command curl
 require_command python3
 
+python3 "$PY_TEST" --check-deps
+
 ROOT=$(mktemp -d "${TMPDIR:-/tmp}/minikv-s3-compat.XXXXXX")
 VOLUME_ROOT="$ROOT/volume"
 NGINX_PREFIX="$ROOT/nginx-prefix"

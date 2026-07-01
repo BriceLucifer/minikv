@@ -160,6 +160,20 @@ Run the test binary directly:
 ./build/debug/tests/mkv_tests
 ```
 
+Run the optional upstream-style S3 client compatibility harness:
+
+```bash
+ctest --preset debug -R S3CompatTest --output-on-failure
+```
+
+`S3CompatTest` starts temporary nginx/WebDAV volume storage and a C++ master,
+then runs `tests/s3_compat_test.py`. The Python suite mirrors the intent of
+upstream `tools/s3test.py`: boto3 write/list/delete, the known redirect-based
+`get_object` expected failure, and PyArrow file-info/list/delete/parquet
+checks. If `boto3` or `pyarrow` are not installed, those suites are reported as
+skipped rather than failing the core build. Set `MINIKV_RUN_LARGE_S3_COMPAT=1`
+to include the larger multipart parquet roundtrip.
+
 ## Run With nginx Volumes
 
 This rewrite keeps the original minikeyvalue storage model: the master is C++,
