@@ -8,7 +8,6 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <stdexcept>
 #include <string>
 #include <thread>

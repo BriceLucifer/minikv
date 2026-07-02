@@ -1,376 +1,149 @@
-minikv production performance experience
+minikv production and performance experience
 
 Date: 2026-07-02
 
-Goal
-----
-Review the current C++ minikv implementation from a production and performance
-angle, compare the observed behavior with expected minikeyvalue-style behavior,
-run tests and benchmarks, then make conservative changes that improve production
-operability without hiding the real bottleneck.
-
-What was verified first
------------------------
-The functional test suite was already strong: core HTTP behavior, S3 subset
-compatibility, nginx volume behavior, rebuild, rebalance, metadata layout, and
-multipart behavior were covered. I rebuilt and ran the full suite after each
-meaningful change.
-
-Important validation commands used:
-
-- cmake --build --preset debug
-- ctest --preset debug --output-on-failure
-- cmake --build --preset release
-- strict upstream/S3/nginx tests through the normal ctest suite
-
-Final validation for this round:
-
-- debug build passed
-- focused performance-related tests passed
-- full ctest debug passed: 99/99
-- release build passed
-
-How the bottleneck was found
-----------------------------
-The first benchmark used a local topology:
-
-- Python benchmark client
-- one C++ minikv master
-- five local nginx volume servers
-- three replicas per object
-- local loopback networking
-- release build
-
-The early high-concurrency benchmark showed a confusing mix of HTTP 500 and
-client socket errors at PUT+DELETE concurrency 32 and 64. The first conclusion
-was not "the object logic is corrupt"; it was that the benchmark was exhausting
-local short-lived TCP connections.
-
-The important observation was TIME_WAIT growth. After aggressive short-connection
-benchmarks, this command showed tens of thousands of sockets stuck in TCP close
-state:
-
-  netstat -an | rg 'TIME_WAIT|CLOSE_WAIT' | wc -l
-
-At one point the count was around 24822. After waiting, it dropped back to single
-digits. Re-running isolated scenarios after TIME_WAIT dropped produced much more
-stable results.
-
-This changed the interpretation:
-
-- c32/c64 failures were largely network resource pressure from short connections.
-- master 500s happened when replica volume operations failed under that pressure.
-- client socket errors came from the benchmark client failing to open new local
-  TCP connections.
-
-Important topology correction
------------------------------
-The benchmark topology was:
-
-  client -> C++ master -> nginx volumes
-
-It was not:
-
-  client -> nginx proxy -> C++ instances
-
-So the observed 500s were generally returned by the C++ master after volume
-PUT/DELETE/HEAD failed, not by nginx proxying to C++ backends.
-
-Source-level findings
----------------------
-The HTTP server is not an async scalable architecture yet. It is a synchronous
-session handler running on a fixed Boost.Asio thread_pool:
-
-- accept loop posts each socket to the worker pool
-- each worker performs blocking read -> handler -> write
-- keep-alive is disabled
-- request bodies are materialized in memory as string_body
-
-The volume client also creates a fresh HTTP connection per operation:
-
-- GET/HEAD/PUT/DELETE each create a new request path
-- there is no persistent connection pool
-- write/delete replica operations were originally serial
-
-The read path was also informative. A GET on an existing object first probes
-replicas with HEAD before returning a 302. macOS sample showed the master spending
-time in:
-
-- App::readFromReplica
-- volume_client::remoteHead / remoteHeadInfo
-- http::request
-- connect / kevent
-
-That means the current hot path is connection management and blocking network IO,
-not MD5, LevelDB, or JSON.
-
-Profiling method
-----------------
-Linux perf was not available on this macOS machine. The available tools were:
-
-- sample
-- xctrace
-- dtrace
-- spindump
-- ab
-
-I used macOS sample as the practical local substitute for perf/flamegraph:
-
-  sample <mkv-pid> 5 -file /private/tmp/minikv-master.sample.txt
-
-The sample output confirmed that the master spent most of its observed time in
-accept, worker waiting, and outbound http::request/connect/kevent paths. This is
-consistent with the benchmark symptoms.
-
-Benchmark results worth keeping
--------------------------------
-Short fixed-operation benchmarks are more trustworthy than long unbounded
-short-connection benchmarks on this machine.
-
-Representative stable results, release build, 64KiB object, default serial
-replica IO:
-
-- GET redirect, concurrency 16: about 7431 req/s, p99 about 1.5 ms
-- GET follow redirect, concurrency 16: about 3379 req/s, about 211 MiB/s,
-  p99 about 5.5 ms
-- PUT+DELETE, concurrency 8: about 1511 ops/s, p99 about 6.4 ms, 1000/1000 ok
-- PUT+DELETE, concurrency 16 isolated after TIME_WAIT cleared: about 1037 ops/s,
-  p99 about 22 ms, 1000/1000 ok
-
-Long unbounded short-connection benchmarks are intentionally not treated as true
-service capacity. They quickly become a TIME_WAIT / ephemeral port benchmark.
-
-What was changed
-----------------
-1. Configurable HTTP worker count
-
-Added:
-
-  -workers <n>
-
-Default remains 0, meaning use hardware_concurrency. This lets production tune
-the worker pool for blocking network IO without recompiling.
-
-2. Explicit parallel replica IO mode
-
-Added:
-
-  -parallelreplicas true|false
-
-Default is false. Parallel replica IO exists as an experiment, but it is not
-safe as the default yet because it increases outbound connection pressure.
-
-The code can now run replica PUT/DELETE either serially or in parallel based on
-AppOptions::parallel_replica_io.
-
-3. Replica operation error logging
-
-Replica write/delete failures now log:
-
-  <operation> error <exception> <remote-url>
-
-Previously those exceptions were swallowed. This made production 500s much
-harder to diagnose.
-
-4. Deploy templates updated
-
-The systemd env/service templates now expose:
-
-- MINIKV_WORKERS
-- MINIKV_PARALLEL_REPLICAS
-
-Why parallel replica IO is not default
---------------------------------------
-Parallel replica writes reduce per-request serial waiting in theory, but in this
-current architecture every replica operation is also a fresh short-lived TCP
-connection. With three replicas, each write/delete operation can multiply
-connection churn. Under high concurrency, that worsens TIME_WAIT pressure before
-the service reaches a true CPU or disk limit.
-
-So the safer production default is still serial replica IO. Parallel mode is kept
-only for controlled experiments after keep-alive or outbound connection pooling
-exists.
-
-Production guidance from this round
------------------------------------
-The current code can be canaried carefully, but should not be treated as ready
-for high-write critical production until the connection model is improved.
-
-Recommended safe canary settings:
-
-- keep MINIKV_PARALLEL_REPLICAS=false
-- start with write concurrency <= 8
-- test concurrency 16 only after TIME_WAIT, 5xx, and p99 latency are monitored
-- increase MINIKV_WORKERS cautiously, for example 32, only with metrics
-- do not use long unbounded short-connection benchmarks as the source of truth
-
-Important metrics to collect:
-
-- master 2xx/4xx/5xx by route
-- volume operation failures
-- p50/p95/p99 latency for GET/PUT/DELETE
-- master RSS
-- open file descriptors
-- TIME_WAIT/CLOSE_WAIT count
-- nginx volume 4xx/5xx
-- disk free, inode free, and write latency
-
-Next optimizations that actually matter
----------------------------------------
-1. Keep-alive for inbound HTTP
-
-The master currently closes every client connection. Keeping inbound connections
-alive would reduce accept/connect churn and make benchmarks more representative.
-
-2. Outbound volume connection pooling
-
-This is the biggest next win. The master should reuse connections to nginx
-volumes for HEAD/PUT/DELETE instead of creating new connections for every
-operation.
-
-3. Replace per-request resolver work for configured volumes
-
-Configured volume addresses can be parsed/resolved once or cached. The sample
-output showed repeated resolver/connect machinery in hot paths.
-
-4. Stream ordinary PUT bodies to temporary files or directly to volumes
-
-The production body limit prevents unlimited memory growth, but ordinary PUT
-still materializes the full request body as a string. Large objects need a
-streaming path before critical production.
-
-5. Add backpressure
-
-Before accepting more write traffic, the master should have an explicit limit on
-in-flight writes and replica operations. Returning 503 under pressure is better
-than letting the host run out of TCP resources.
-
-6. Production benchmark harness
-
-The temporary benchmark script should become a committed tool with:
-
-- fixed operation mode
-- duration mode
-- keep-alive capable client
-- TIME_WAIT/fd/RSS capture
-- JSON output
-- scenario isolation and cooldown
-
-7. Linux perf/flamegraph on the target host
-
-On Linux production-like hardware, rerun with perf and flamegraphs. macOS sample
-was enough to identify connection churn here, but final production tuning should
-use the actual deployment OS and kernel.
-
-Key lesson
-----------
-The current bottleneck is not a mysterious C++ logic bug. It is the interaction
-between synchronous blocking IO, disabled keep-alive, no outbound connection
-pooling, and aggressive short-connection benchmarks. The right next performance
-work is to reduce connection churn and add backpressure before chasing lower
-level techniques like io_uring.
-
-Follow-up: keep-alive and connection pooling
---------------------------------------------
-The next round implemented the connection work first, because longer tests
-showed that even concurrency 8 can be polluted by short-lived TCP churn.
-
-What changed:
-
-- inbound HTTP/1.1 keep-alive on the master
-- a bounded 100 requests per client connection
-- 5 second idle/read/write timeouts per persistent connection
-- ordinary master-to-volume GET/HEAD/PUT/DELETE connection reuse
-- conservative one-connection-per-volume pooling with retry after a broken
-  pooled connection
-- multipart file streaming left as a one-shot connection to avoid occupying the
-  pooled ordinary request socket
-- explicit test cleanup for pooled volume connections
-
-The first c16 keep-alive benchmark still produced a small number of socket
-timeouts. That was not TIME_WAIT pressure. It exposed a different production
-truth: the current server is synchronous per connection, so each persistent
-client connection occupies one HTTP worker until the connection closes or times
-out. With the old automatic worker count based only on CPU cores, keep-alive
-clients could starve queued accepted sockets.
-
-The default worker policy was therefore changed from hardware concurrency to a
-keep-alive aware value:
-
-- MINIKV_WORKERS=0 now maps to max(64, hardware_concurrency * 4)
-- production deployments should still size workers above expected concurrent
-  keep-alive client connections and monitor fd count, RSS, TIME_WAIT, and p99
-
-Release benchmark samples after the fix, using a keep-alive capable Python
-client, five nginx volumes, replicas=3, 64 KiB objects, and fixed 600 operation
-samples:
-
-- c16 missing GET: 9.55k RPS, p99 1.63 ms, 0 errors
-- c16 GET redirect: 10.09k RPS, p99 0.76 ms, 0 errors
-- c16 GET follow: 5.36k RPS, 334.8 MiB/s, p99 3.69 ms, 0 errors
-- c16 PUT+DELETE: 1.66k RPS, 104.1 MiB/s, p99 13.79 ms, 0 errors
-- c32 GET follow canary: 5.05k RPS, 315.7 MiB/s, p99 10.18 ms, 0 errors
-- c32 PUT+DELETE canary: 1.54k RPS, 96.1 MiB/s, p99 33.42 ms, 0 errors
-
-Interpretation:
-
-- connection churn is no longer the first bottleneck in these samples
-- write throughput does not scale from c16 to c32, so the next real bottleneck
-  is likely replica write serialization, nginx volume behavior, disk/file IO,
-  LevelDB metadata writes, or key-level locking distribution
-- the next profiling pass should use Linux perf/flamegraphs on the target host,
-  with client keep-alive enabled and TIME_WAIT/fd counts recorded as metadata
-
-Follow-up: same-machine Go baseline
------------------------------------
-The upstream reference numbers supplied during review were:
-
-- missing-key GET: 116,338 req/sec
-- upstream thrasher: 10,000 write/read/delete in 2.620922675s, or
-  3,815.40/sec
-
-Those numbers are useful as a target, but they were not directly reproducible
-on the local machine. To avoid chasing a false regression, the upstream Go
-commit 451d248 was built and run on the same MacBook/nginx topology used for
-the C++ release tests.
-
-Local machine:
-
+Scope
+-----
+Review the C++ rewrite for production readiness, compare it with
+geohot/minikeyvalue, run functional and compatibility tests, investigate local
+performance limits, and make conservative fixes that improve operability.
+
+Machine
+-------
 - MacBook Pro Mac16,8
 - Apple M4 Pro, 14 cores
 - 24 GB RAM
 - macOS 26.5.1 (25F80)
 
-Same-machine benchmark results:
+Validation
+----------
+The repo is not judged only by unit tests. The important local gates are:
 
-- Go upstream missing-key wrk: 163,872 req/sec
-- Go upstream thrasher, clean repeated runs: 1,099/sec and 1,191/sec
-- C++ rewrite missing-key wrk: 173,036 req/sec
-- C++ rewrite thrasher: 1,800/sec
+- cmake --build --preset debug
+- ctest --preset debug --output-on-failure
+- cmake --build --preset release
+- MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 ctest --preset debug -R UpstreamCompatTest
+- MINIKV_REQUIRE_S3_COMPAT_DEPS=1 ctest --preset debug -R S3CompatTest
+- clang-tidy -p build/debug $(rg --files -g '*.cpp' src tests) --quiet
+- clangd --check on representative source files
+- go run tools/thrasher.go -h
 
-This means the C++ rewrite is ahead of the same-machine Go baseline for the two
-tested workloads, even though it does not reproduce the earlier external
-3,815/sec thrasher number.
+The deploy-style tests start real nginx/WebDAV volumes and one C++ master, so
+they cover the storage topology that matters in production.
 
-The performance issue found during this pass was still real:
+What failed first
+-----------------
+Early high-concurrency PUT+DELETE tests produced HTTP 500s and client socket
+errors. The topology was:
 
-- the first volume keep-alive implementation used one connection per volume
-  endpoint, which serialized ordinary replica operations
-- raising pool width exposed another bug: every pooled connection owned its own
-  Asio io_context, which can allocate kqueue/pipe descriptors on macOS and hit
-  "Too many open files"
-- the pool now shares one io_context per endpoint pool and exposes
-  MINIKV_VOLUME_POOL / -volumepool for controlled tuning
+  client -> C++ master -> nginx/WebDAV volumes
 
-macOS sample during a long thrasher run showed the master mostly waiting in
-Boost.Beast/Asio socket reads for nginx volume responses. LevelDB and MD5 were
-visible but not dominant. Raising the pool width from 8 to 16 was slower on
-this machine, so the production default remains 8 and should be tuned only with
-fd, TIME_WAIT, p99, and volume latency metrics.
+It was not an nginx proxy in front of C++. The first observed failure mode was
+short-lived TCP churn: benchmark clients disabled keep-alive, the master opened
+fresh volume connections, and the host accumulated many local sockets in
+TIME_WAIT.
 
-Current production read:
+Useful check:
 
-- Can canary with non-critical data and full observability.
-- Not yet ready for critical production without staging restore/rebalance
-  drills, Linux perf/flamegraph evidence, monitoring/alert validation, and
-  documented operator runbooks exercised under failure.
+  netstat -an | rg 'TIME_WAIT|CLOSE_WAIT' | wc -l
+
+On this machine the count reached roughly 24822 during bad runs, then returned
+to single digits after cooldown. That made long short-connection benchmarks a
+test of local TCP resources, not a clean service-capacity measurement.
+
+Source findings
+---------------
+- The master is synchronous per accepted connection on a Boost.Asio thread
+  pool.
+- Request bodies for ordinary PUT are still materialized in memory up to
+  MINIKV_MAX_BODY_SIZE.
+- GET redirects probe volume replicas with HEAD before returning 302.
+- The original volume client created a fresh HTTP connection per replica
+  operation.
+- macOS sample showed hot time in Boost.Beast/Asio socket read, connect,
+  kevent, and volume HEAD/PUT/DELETE paths. LevelDB and MD5 were visible but
+  not dominant.
+
+What changed
+------------
+- Added a configurable worker count: MINIKV_WORKERS / -workers.
+- Changed the automatic worker default to a keep-alive-aware minimum of 64.
+- Added inbound HTTP/1.1 keep-alive with bounded requests and timeouts.
+- Added ordinary master-to-volume keep-alive pooling:
+  MINIKV_VOLUME_POOL / -volumepool.
+- Shared one Asio io_context per volume endpoint pool to avoid fd pressure from
+  one io_context per pooled connection.
+- Kept MINIKV_PARALLEL_REPLICAS false by default; parallel replica writes can
+  increase volume pressure and connection churn.
+- Added replica failure logging with operation and remote URL.
+- Added deploy templates, body limits, pinned fetched dependency revisions,
+  S3-style XML errors, and production runbook guidance.
+- Added tools/thrasher.go as a local clone of upstream's write/read/delete
+  thrasher.
+
+Benchmark evidence
+------------------
+Same machine, release builds, local nginx/WebDAV topology:
+
+| Implementation | Missing GET | 10k write/read/delete |
+| --- | ---: | ---: |
+| C++ rewrite | 173,036 req/s | 1,800/sec |
+| Go upstream 451d248 | 163,872 req/s | 1,099-1,191/sec |
+| Previously reported upstream reference | 116,338 req/s | 3,815/sec |
+
+The C++ rewrite is ahead of the same-machine Go baseline for the measured
+workloads. The external 3,815/sec thrasher number was not reproduced locally,
+so it should not be treated as an apples-to-apples target without matching
+hardware, OS, nginx config, filesystem, and process limits.
+
+Earlier keep-alive samples with 64 KiB objects and five local volumes:
+
+- c16 missing GET: 9.55k RPS, p99 1.63 ms, 0 errors
+- c16 GET redirect: 10.09k RPS, p99 0.76 ms, 0 errors
+- c16 GET follow: 5.36k RPS, 334.8 MiB/s, p99 3.69 ms, 0 errors
+- c16 PUT+DELETE: 1.66k RPS, 104.1 MiB/s, p99 13.79 ms, 0 errors
+- c32 GET follow: 5.05k RPS, 315.7 MiB/s, p99 10.18 ms, 0 errors
+- c32 PUT+DELETE: 1.54k RPS, 96.1 MiB/s, p99 33.42 ms, 0 errors
+
+Post-cleanup sanity probe from this documentation/static-check pass:
+
+- command: python3 /private/tmp/minikv_benchmark.py --mkv build/release/mkv
+  --seconds 3 --concurrency 8,16 --sizes 16,65536 --skip-ab --max-ops 300
+  --preload-count 64 --workers 0 --volume-pool 8 --reuse-client-connections
+- result: every scenario completed 300/300 operations with 0 errors
+- c16 GET follow 64 KiB: 5.23k RPS, 326.8 MiB/s, p99 6.69 ms
+- c16 PUT+DELETE 64 KiB: 1.73k ops/s, 108.4 MiB/s, p99 14.96 ms
+- no minikv benchmark/test roots and no mkv/nginx/wrk processes were left
+  after cleanup
+
+Interpretation
+--------------
+The first bottleneck was connection churn. After keep-alive and volume pooling,
+the next bottleneck is likely volume wait time, nginx/WebDAV behavior, file IO,
+or metadata serialization. Raising MINIKV_VOLUME_POOL from 8 to 16 was slower
+on this Mac, so the production default remains 8 and should be tuned with fd,
+TIME_WAIT, p99, and volume latency metrics.
+
+Production read
+---------------
+Canary is reasonable for non-critical data with full observability. Do not put
+critical production data on it until these are done on production-like Linux
+hardware:
+
+- restore drill from volume files into a rebuilt LevelDB index
+- rebalance drill with old and new volume sets
+- sustained benchmark with keep-alive clients, fd/TIME_WAIT/RSS capture, and
+  p50/p95/p99 latency
+- Linux perf/flamegraph profile under read and write load
+- monitoring and alerting for master 5xx, volume failures, LevelDB errors,
+  disk/inode pressure, multipart scratch growth, fd count, RSS, and latency
+- documented rollback and backup policy tested by operators
+
+Next useful performance work
+----------------------------
+1. Add explicit backpressure for in-flight writes and replica operations.
+2. Stream ordinary PUT bodies to temporary files or directly to volumes.
+3. Resolve/cache configured volume addresses instead of repeating resolver
+   work on hot paths.
+4. Build a committed benchmark harness with JSON output and cooldown metadata.
+5. Re-profile on the target Linux deployment with perf and flamegraphs.

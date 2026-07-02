@@ -419,18 +419,17 @@ S3 clients while `GET` keeps the original minikeyvalue redirect model.
 
 ## Production Deploy
 
-The production shape should stay close to upstream:
+Production topology:
 
 ```text
 clients -> mkv master -> nginx/WebDAV volume servers -> local filesystems
 ```
 
-The master stores only LevelDB metadata. Volume servers store object bytes on
-ordinary filesystems behind stock nginx/WebDAV. Do not point multiple masters
-at the same LevelDB path; stop the master before running `rebuild` or
-`rebalance`.
+The master owns LevelDB metadata. nginx/WebDAV volume services own object
+bytes on ordinary filesystems. Do not run two masters against the same LevelDB
+path. Stop the master before `rebuild` or `rebalance`.
 
-Example filesystem layout:
+Minimal filesystem layout:
 
 ```text
 /usr/local/bin/mkv
@@ -442,7 +441,7 @@ Example filesystem layout:
 /var/lib/minikv/volume-3/
 ```
 
-Example service/config templates are in `deploy/`:
+Templates:
 
 ```text
 deploy/minikv-master.env.example
@@ -451,9 +450,9 @@ deploy/minikv-volume@.service
 deploy/nginx-volume.conf.example
 ```
 
-### 1. Build A Release Binary
+### 1. Build And Install
 
-Build and test the same commit you plan to deploy:
+Build and test the exact commit that will be deployed:
 
 ```bash
 cmake --preset release
@@ -470,13 +469,11 @@ sudo install -m 0755 build/release/mkv /usr/local/bin/mkv
 Keep the deployed git commit, compiler, CMake preset, and dependency revisions
 with your release notes. LevelDB and BoringSSL are pinned by CMake.
 
-### 2. Deploy nginx Volume Services
+### 2. Start Volume Services
 
-Each volume is an nginx/WebDAV server that owns one filesystem root. One host
-can run several volume services by copying
-`deploy/nginx-volume.conf.example` to `/etc/minikv/volume-1.conf`,
-`/etc/minikv/volume-2.conf`, and so on, then changing `listen`, `pid`, log, and
-`root` paths. Start them with systemd instance names:
+Each volume is one nginx/WebDAV service with one root directory. Copy the
+template once per volume and edit `listen`, `pid`, log paths, `root`, and
+`client_body_temp_path`:
 
 ```bash
 sudo install -d /etc/minikv /var/lib/minikv
@@ -486,24 +483,15 @@ sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-1.conf
 sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-2.conf
 sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-3.conf
 
-# Edit each copied file:
-# - listen port, for example 3001, 3002, 3003
-# - pid path
-# - error_log path
-# - root path
-# - client_body_temp_path
-
 sudo systemctl daemon-reload
 sudo systemctl enable --now minikv-volume@1
 sudo systemctl enable --now minikv-volume@2
 sudo systemctl enable --now minikv-volume@3
 ```
 
-Volume ports should normally be private to the master and trusted clients. If
-volumes are reachable from untrusted networks, put authentication/TLS/firewall
-rules in front of them.
-
-Verify each volume before starting the master:
+Keep volume ports private to the master and trusted clients, or put firewall,
+TLS, and authentication in front of them. Smoke-test each volume before the
+master starts:
 
 ```bash
 curl -i http://127.0.0.1:3001/
@@ -512,9 +500,7 @@ curl -i http://127.0.0.1:3001/smoke/object
 curl -X DELETE http://127.0.0.1:3001/smoke/object
 ```
 
-### 3. Configure And Start The Master
-
-Install the master unit and env file:
+### 3. Start The Master
 
 ```bash
 sudo cp deploy/minikv-master.env.example /etc/minikv/master.env
@@ -522,12 +508,7 @@ sudo cp deploy/minikv-master.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
-Edit `/etc/minikv/master.env` before starting production. `MINIKV_VOLUMES`
-must list every volume address the master should use, and
-`MINIKV_REPLICAS` must be no larger than that list. Keep `MINIKV_SUBVOLUMES`
-stable for an existing deployment unless you are deliberately rebalancing.
-
-Example single-host test deployment:
+Edit `/etc/minikv/master.env` before first start:
 
 ```text
 MINIKV_PORT=3000
@@ -546,30 +527,29 @@ MINIKV_EXTRA_ARGS=
 
 Important production settings:
 
-- `MINIKV_MAX_BODY_SIZE`: largest accepted single request body. The master can
-  hold roughly `active writes * max body size` before replica writes complete.
+- `MINIKV_VOLUMES`: comma-separated volume addresses. `MINIKV_REPLICAS` must
+  be no larger than this list.
+- `MINIKV_SUBVOLUMES`: keep stable after launch unless you are deliberately
+  rebalancing.
+- `MINIKV_MAX_BODY_SIZE`: largest accepted single request body. Ordinary PUT
+  bodies are still materialized in memory up to this limit.
 - `MINIKV_WORKERS`: HTTP worker threads. `0` uses a keep-alive aware automatic
   default of at least 64. Because the current server handles each persistent
-  connection synchronously, size this above expected concurrent client
-  connections and watch p99 latency, RSS, fd count, and TIME_WAIT.
+  connection synchronously, size it above expected concurrent client
+  connections.
 - `MINIKV_VOLUME_POOL`: keep-alive connections per volume endpoint for ordinary
-  `GET`/`HEAD`/`PUT`/`DELETE` replica operations. The local benchmark default
-  is `8`; increasing it to `16` on macOS increased fd pressure and reduced
-  thrasher throughput.
-- `MINIKV_PARALLEL_REPLICAS`: keep `false` for production by default. `true`
-  writes/deletes replicas concurrently, but it also increases simultaneous
-  volume pressure and should be enabled only with connection metrics.
+  replica operations. Local default: `8`.
+- `MINIKV_PARALLEL_REPLICAS`: keep `false` by default. `true` increases
+  simultaneous volume pressure.
 - `MINIKV_VOLTIMEOUT`: volume `HEAD` timeout used on read redirects. Keep it
   low enough that a failed volume does not hold master workers for long.
-
-Start the master:
 
 ```bash
 sudo systemctl enable --now minikv-master
 sudo systemctl status minikv-master
 ```
 
-Run a master smoke test:
+Master smoke test:
 
 ```bash
 curl -i -X PUT --data-binary hello http://127.0.0.1:3000/smoke/hello
@@ -578,20 +558,16 @@ curl -L http://127.0.0.1:3000/smoke/hello
 curl -i -X DELETE http://127.0.0.1:3000/smoke/hello
 ```
 
-Expected behavior:
+Expected: `PUT` returns `201`, plain `GET` returns `302`, `GET -L` returns the
+body, and `DELETE` returns `204`.
 
-- `PUT` returns `201`.
-- `GET` without `-L` returns `302 Location: http://volume/...`.
-- `GET -L` returns the object bytes.
-- `DELETE` returns `204`.
+### 4. Release Gates
 
-### 4. Preflight Gates
-
-Before accepting traffic, run the same gates used by this repo:
+Run these before accepting traffic:
 
 ```bash
 cmake --build --preset release
-ctest --preset debug
+ctest --preset debug --output-on-failure
 MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 \
   ctest --preset debug -R UpstreamCompatTest --output-on-failure
 MINIKV_REQUIRE_S3_COMPAT_DEPS=1 \
@@ -605,39 +581,32 @@ repository-local test environment:
 tests/ensure_python_test_env.sh
 ```
 
-Do not skip the deploy-style tests for a production release. They start real
-nginx/WebDAV volumes and catch failures that unit tests cannot see.
+Do not skip the deploy-style tests. They start real nginx/WebDAV volumes and
+catch failures unit tests cannot see.
 
 ### 5. Production Runbook
 
-- Backup: take filesystem snapshots of `/var/lib/minikv/indexdb` and every
-  volume root together when possible. If snapshots cannot be atomic, snapshot
-  volume roots first, then LevelDB, and run a restore drill before trusting the
-  backup policy.
-- Restore drill: restore volumes to a staging host, start nginx volume services,
-  run `mkv -volumes ... -db /tmp/rebuilt-index rebuild`, then run HTTP and S3
-  compatibility tests against that staging topology.
-- Rebuild: stop the master before rebuilding a production index. Rebuild into a
-  new DB path first, then swap the service env to the rebuilt path after
-  validation.
+- Backup: snapshot `/var/lib/minikv/indexdb` and every volume root together
+  when possible. If snapshots cannot be atomic, snapshot volumes first, then
+  LevelDB, and validate with a restore drill.
+- Restore drill: restore volume roots to staging, start nginx volumes, run
+  `mkv -volumes ... -db /tmp/rebuilt-index rebuild`, then run HTTP and S3
+  compatibility tests against the rebuilt index.
+- Rebuild: stop the master, rebuild into a new DB path, validate, then switch
+  the service env to the rebuilt path.
 - Rebalance: stop the master, update `MINIKV_VOLUMES`, run `rebalance`, then
-  restart the master. Keep old volumes online until `Key-Balance` reports
-  balanced for sampled hot keys and the rebalance command exits cleanly.
-- Delete workflow: use `-protect` with `UNLINK` plus `?unlinked` when operators
-  need a review window before physically deleting volume files.
-- Monitoring: alert on 5xx responses, 409 conflicts, 413 payload rejections,
-  volume `HEAD`/`PUT`/`DELETE` failures, LevelDB open/write failures, nginx
-  disk usage, inode usage, master RSS, and growth of the `*.multipart`
-  scratch directory.
-- Capacity: keep free space above one full replica set of your largest expected
-  object batch. For agent artifact storage, define retention per key prefix and
-  run periodic `?list` scans from your metadata DB ownership model.
-- Keep volume ports private to trusted clients or put authentication/TLS in
-  front of the master and volumes.
+  restart. Keep old volumes online until sampled `Key-Balance` values are good.
+- Delete workflow: use `-protect`, `UNLINK`, and `?unlinked` when operators
+  need a review window before physical volume deletion.
+- Monitoring: alert on 5xx, 409, 413, volume operation failures, LevelDB
+  failures, disk/inode pressure, master RSS, fd count, TIME_WAIT/CLOSE_WAIT,
+  latency p95/p99, and multipart scratch growth.
+- Capacity: keep free space above one full replica set of the largest expected
+  object batch and define retention by key prefix.
 
 ### 6. Benchmark And Readiness Gate
 
-Benchmark gate:
+Benchmark production-like hardware before critical data:
 
 ```bash
 cmake --preset release
@@ -654,7 +623,7 @@ Record hardware, filesystem, object size mix, replica count, subvolume count,
 worker count, volume connection pool width, `MINIKV_MAX_BODY_SIZE`, and volume
 paths with every benchmark so future changes are comparable.
 
-Local benchmark snapshot from this repo:
+Local snapshot:
 
 ```text
 Date: 2026-07-02
@@ -681,30 +650,27 @@ Results:
 | Go upstream on same machine | 163,872 req/s | 1,099-1,191/sec |
 | Previously reported upstream reference | 116,338 req/s | 3,815/sec |
 
-Interpretation: on this MacBook, the C++ rewrite is ahead of the same-machine
-Go baseline for both tested workloads. It has not reproduced the earlier
-3,815/sec upstream thrasher number, so do not treat that external number as a
-direct apples-to-apples regression target without matching hardware, OS,
-filesystem, nginx config, and process limits.
+On this MacBook, the C++ rewrite is ahead of the same-machine Go baseline for
+both measured workloads. The external 3,815/sec reference was not reproduced
+locally, so treat it as non-comparable unless hardware, OS, filesystem, nginx
+config, and process limits match.
 
-Interpret benchmark failures carefully. With client-side keep-alive disabled,
-long short-connection runs can become a TCP TIME_WAIT / ephemeral-port
-benchmark before they reveal the service's true CPU or disk limit. Track:
+With keep-alive disabled, long short-connection runs can become a TCP
+TIME_WAIT / ephemeral-port benchmark. Track:
 
 ```bash
 netstat -an | rg 'TIME_WAIT|CLOSE_WAIT' | wc -l
 ```
 
-Production canary recommendation:
+Canary rule:
 
-- Start with write concurrency at or below 8.
-- Test concurrency 16 only after TIME_WAIT, 5xx, fd count, RSS, and p99 latency
-  stay stable.
-- Treat concurrency 32/64 write failures as a red line until the benchmark
-  client uses connection reuse and `MINIKV_VOLUME_POOL` has been sized from
-  measured p99/fd/TIME_WAIT data.
-- Keep `MINIKV_PARALLEL_REPLICAS=false` unless you are running a controlled
-  experiment with connection metrics.
+- Start write concurrency at or below 8.
+- Move to 16 only after TIME_WAIT, 5xx, fd count, RSS, and p99 stay stable.
+- Treat 32/64 write failures as a red line until connection reuse and
+  `MINIKV_VOLUME_POOL` are sized from measured data.
+- Keep `MINIKV_PARALLEL_REPLICAS=false` outside controlled experiments.
+- Critical production still needs Linux perf/flamegraph evidence, restore and
+  rebalance drills, and alert validation.
 
 ## Release Build
 

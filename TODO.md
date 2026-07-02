@@ -49,6 +49,12 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     instances, nginx/WebDAV volume config, and master environment config.
   - HTTP/1.1 keep-alive, master-to-volume keep-alive pooling, configurable
     `-volumepool`, and `tools/thrasher.go` benchmark parity tooling.
+  - README and `experience.txt` were compacted into deploy/runbook and
+    production-performance notes; the local benchmark machine is recorded as
+    MacBook Pro Mac16,8, Apple M4 Pro 14-core, 24 GB RAM, macOS 26.5.1.
+  - Full C++ clang-tidy coverage was run across every `src/*.cpp` and
+    `tests/*.cpp`; clangd unused-include findings in `src/server.cpp` and
+    `tests/volume_client_test.cpp` were fixed.
   - S3 `HEAD` returns direct object metadata for real S3 clients, and AWS SDK
     `aws-chunked` streaming payloads are decoded before replica writes.
   - S3 listings now include bucket/list metadata and object `LastModified` /
@@ -103,11 +109,17 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - `cmake --build --preset debug`
   - `ctest --preset debug --output-on-failure` with `101/101 tests passed`
   - `cmake --build --preset release`
-  - `clangd --check=src/volume_client.cpp --compile-commands-dir=build/debug`
-    completed with `0 errors`
-  - `clang-tidy -p build/debug src/volume_client.cpp src/http.cpp
-    src/server.cpp --quiet` completed without warnings
+  - `clang-tidy -p build/debug $(rg --files -g '*.cpp' src tests) --quiet`
+    completed without warnings
+  - `clangd --check` was run across all C++ translation units; this local
+    clangd reports non-source `ExtractFunction` tweak errors on test macros,
+    while clang-tidy and compilation remain clean
   - `go run tools/thrasher.go -h` verified the checked-in thrasher tool
+  - Short post-cleanup benchmark probe with
+    `/private/tmp/minikv_benchmark.py --reuse-client-connections` completed
+    every scenario with `300/300` operations and `0` errors; c16 64 KiB
+    `GET -L` measured about `5.23k req/s` and c16 64 KiB PUT+DELETE measured
+    about `1.73k ops/s`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
