@@ -367,10 +367,14 @@ TEST(HttpAdapterTest, ClientReadTimeoutThrowsForStalledResponse) {
   });
   local.start();
 
-  EXPECT_THROW((void)minikv::http::request("GET", local.url("/slow"), {},
-                                           "application/octet-stream",
-                                           std::chrono::milliseconds{20}),
-               std::exception);
+  EXPECT_THROW(
+      [&local] {
+        auto response = minikv::http::request("GET", local.url("/slow"), {},
+                                              "application/octet-stream",
+                                              std::chrono::milliseconds{20});
+        EXPECT_EQ(response.status, 200);
+      }(),
+      std::exception);
 }
 
 TEST(HttpAdapterTest, CustomMethodsReachServerHandler) {
@@ -425,6 +429,6 @@ TEST(HttpAdapterTest, KeepsHttp11ConnectionsAliveForMultipleRequests) {
   }
 
   auto ec = boost::system::error_code{};
-  (void)socket.shutdown(tcp::socket::shutdown_both, ec);
+  socket.shutdown(tcp::socket::shutdown_both, ec);
   EXPECT_EQ(requests, 2);
 }

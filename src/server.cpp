@@ -246,7 +246,7 @@ ObjectMetadata objectMetadataFromReplicas(const record::Record &rec,
                 .last_modified = head.last_modified};
       }
     } catch (const std::exception &ex) {
-      (void)ex;
+      [[maybe_unused]] const auto *ignored_replica_error = &ex;
       // Try the next replica; unavailable replicas should not fail HEAD.
     }
   }
@@ -619,7 +619,7 @@ ReadResult App::readFromReplica(std::string_view key) {
         return result;
       }
     } catch (const std::exception &ex) {
-      (void)ex;
+      [[maybe_unused]] const auto *ignored_replica_error = &ex;
     }
   }
 

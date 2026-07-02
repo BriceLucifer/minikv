@@ -320,3 +320,57 @@ Interpretation:
   LevelDB metadata writes, or key-level locking distribution
 - the next profiling pass should use Linux perf/flamegraphs on the target host,
   with client keep-alive enabled and TIME_WAIT/fd counts recorded as metadata
+
+Follow-up: same-machine Go baseline
+-----------------------------------
+The upstream reference numbers supplied during review were:
+
+- missing-key GET: 116,338 req/sec
+- upstream thrasher: 10,000 write/read/delete in 2.620922675s, or
+  3,815.40/sec
+
+Those numbers are useful as a target, but they were not directly reproducible
+on the local machine. To avoid chasing a false regression, the upstream Go
+commit 451d248 was built and run on the same MacBook/nginx topology used for
+the C++ release tests.
+
+Local machine:
+
+- MacBook Pro Mac16,8
+- Apple M4 Pro, 14 cores
+- 24 GB RAM
+- macOS 26.5.1 (25F80)
+
+Same-machine benchmark results:
+
+- Go upstream missing-key wrk: 163,872 req/sec
+- Go upstream thrasher, clean repeated runs: 1,099/sec and 1,191/sec
+- C++ rewrite missing-key wrk: 173,036 req/sec
+- C++ rewrite thrasher: 1,800/sec
+
+This means the C++ rewrite is ahead of the same-machine Go baseline for the two
+tested workloads, even though it does not reproduce the earlier external
+3,815/sec thrasher number.
+
+The performance issue found during this pass was still real:
+
+- the first volume keep-alive implementation used one connection per volume
+  endpoint, which serialized ordinary replica operations
+- raising pool width exposed another bug: every pooled connection owned its own
+  Asio io_context, which can allocate kqueue/pipe descriptors on macOS and hit
+  "Too many open files"
+- the pool now shares one io_context per endpoint pool and exposes
+  MINIKV_VOLUME_POOL / -volumepool for controlled tuning
+
+macOS sample during a long thrasher run showed the master mostly waiting in
+Boost.Beast/Asio socket reads for nginx volume responses. LevelDB and MD5 were
+visible but not dominant. Raising the pool width from 8 to 16 was slower on
+this machine, so the production default remains 8 and should be tuned only with
+fd, TIME_WAIT, p99, and volume latency metrics.
+
+Current production read:
+
+- Can canary with non-critical data and full observability.
+- Not yet ready for critical production without staging restore/rebalance
+  drills, Linux perf/flamegraph evidence, monitoring/alert validation, and
+  documented operator runbooks exercised under failure.

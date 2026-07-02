@@ -197,7 +197,8 @@ bhttp::response<bhttp::string_body> toBeastResponse(const Response &res,
 
 std::size_t workerCount() {
   const auto count = std::thread::hardware_concurrency();
-  const auto scaled = count == 0 ? std::size_t{0} : count * 4;
+  const auto scaled =
+      count == 0 ? std::size_t{0} : static_cast<std::size_t>(count) * 4;
   return std::max<std::size_t>(64, scaled);
 }
 
@@ -261,19 +262,19 @@ public:
       return -1;
     }
 
-    (void)acceptor_.open(endpoint.protocol(), ec);
+    acceptor_.open(endpoint.protocol(), ec);
     if (ec) {
       return -1;
     }
-    (void)acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
+    acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
     if (ec) {
       return -1;
     }
-    (void)acceptor_.bind(endpoint, ec);
+    acceptor_.bind(endpoint, ec);
     if (ec) {
       return -1;
     }
-    (void)acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+    acceptor_.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
       return -1;
     }
@@ -290,19 +291,19 @@ public:
       return false;
     }
 
-    (void)acceptor_.open(endpoint.protocol(), ec);
+    acceptor_.open(endpoint.protocol(), ec);
     if (ec) {
       return false;
     }
-    (void)acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
+    acceptor_.set_option(asio::socket_base::reuse_address(true), ec);
     if (ec) {
       return false;
     }
-    (void)acceptor_.bind(endpoint, ec);
+    acceptor_.bind(endpoint, ec);
     if (ec) {
       return false;
     }
-    (void)acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+    acceptor_.listen(asio::socket_base::max_listen_connections, ec);
     if (ec) {
       return false;
     }
@@ -316,7 +317,7 @@ public:
     while (!stopped_.load()) {
       auto socket = tcp::socket{io_};
       auto ec = boost::system::error_code{};
-      (void)acceptor_.accept(socket, ec);
+      acceptor_.accept(socket, ec);
       if (ec) {
         if (stopped_.load()) {
           break;
@@ -351,7 +352,7 @@ public:
     }
     wakeAccept();
     auto ec = boost::system::error_code{};
-    (void)acceptor_.close(ec);
+    acceptor_.close(ec);
     io_.stop();
     workers_->stop();
     workers_->join();
@@ -395,7 +396,7 @@ private:
       }
 
       auto ec = boost::system::error_code{};
-      (void)stream->socket().shutdown(tcp::socket::shutdown_send, ec);
+      stream->socket().shutdown(tcp::socket::shutdown_send, ec);
     } catch (const boost::system::system_error &ex) {
       if (ex.code() == bhttp::error::body_limit) {
         auto res = bhttp::response<bhttp::string_body>{
@@ -403,11 +404,11 @@ private:
         res.content_length(0);
         res.keep_alive(false);
         auto ec = boost::system::error_code{};
-        (void)bhttp::write(*stream, res, ec);
-        (void)stream->socket().shutdown(tcp::socket::shutdown_send, ec);
+        bhttp::write(*stream, res, ec);
+        stream->socket().shutdown(tcp::socket::shutdown_send, ec);
       }
     } catch (const std::exception &ex) {
-      (void)ex;
+      [[maybe_unused]] const auto *ignored_connection_error = &ex;
     }
   }
 
@@ -427,9 +428,9 @@ private:
       if (ec) {
         return;
       }
-      (void)socket.connect(endpoint, ec);
+      socket.connect(endpoint, ec);
     } catch (const std::exception &ex) {
-      (void)ex;
+      [[maybe_unused]] const auto *ignored_wake_error = &ex;
     }
   }
 
@@ -563,7 +564,7 @@ ClientResponse request(std::string_view method, std::string_view url,
   }
 
   auto ec = boost::system::error_code{};
-  (void)stream.socket().shutdown(tcp::socket::shutdown_both, ec);
+  stream.socket().shutdown(tcp::socket::shutdown_both, ec);
   return out;
 }
 

@@ -328,16 +328,17 @@ The C++ rewrite is intentionally stronger than upstream in several places:
   services.
 - CMake pins fetched LevelDB and BoringSSL revisions for reproducible release
   builds.
+- `tools/thrasher.go` provides a local clone of upstream's write/read/delete
+  thrasher with configurable master URL.
 
 Known remaining gaps before calling the rewrite production-complete:
 
-- There is no checked-in benchmark report yet for the five-volume topology.
 - Multipart file streaming and simple standalone clients still use one-shot
   HTTP connections; use a keep-alive capable benchmark client when measuring
   the server's real CPU or disk limit.
-- The current master-to-volume keep-alive pool is deliberately conservative:
-  one serialized ordinary connection per volume endpoint. Raise pool width only
-  with fd, TIME_WAIT, p99, and replica error metrics in hand.
+- The master-to-volume keep-alive pool is configurable with `-volumepool`.
+  Raising it can increase fd pressure and was slower on the local macOS
+  benchmark after nginx/WebDAV became the wait point.
 - The master still materializes accepted `PUT` request bodies in memory up to
   `-maxbodysize`; size that limit for your object mix and worker count.
 - Authentication and TLS are expected to sit in front of the service; they are
@@ -538,6 +539,7 @@ MINIKV_VOLTIMEOUT=1s
 MINIKV_MULTIPART_TTL=24h
 MINIKV_MAX_BODY_SIZE=1G
 MINIKV_WORKERS=0
+MINIKV_VOLUME_POOL=8
 MINIKV_PARALLEL_REPLICAS=false
 MINIKV_EXTRA_ARGS=
 ```
@@ -550,6 +552,10 @@ Important production settings:
   default of at least 64. Because the current server handles each persistent
   connection synchronously, size this above expected concurrent client
   connections and watch p99 latency, RSS, fd count, and TIME_WAIT.
+- `MINIKV_VOLUME_POOL`: keep-alive connections per volume endpoint for ordinary
+  `GET`/`HEAD`/`PUT`/`DELETE` replica operations. The local benchmark default
+  is `8`; increasing it to `16` on macOS increased fd pressure and reduced
+  thrasher throughput.
 - `MINIKV_PARALLEL_REPLICAS`: keep `false` for production by default. `true`
   writes/deletes replicas concurrently, but it also increases simultaneous
   volume pressure and should be enabled only with connection metrics.
@@ -645,8 +651,41 @@ cmake --build --preset release
 ```
 
 Record hardware, filesystem, object size mix, replica count, subvolume count,
-worker count, `MINIKV_MAX_BODY_SIZE`, and volume paths with every benchmark so
-future changes are comparable.
+worker count, volume connection pool width, `MINIKV_MAX_BODY_SIZE`, and volume
+paths with every benchmark so future changes are comparable.
+
+Local benchmark snapshot from this repo:
+
+```text
+Date: 2026-07-02
+Machine: MacBook Pro Mac16,8, Apple M4 Pro, 14 cores, 24 GB RAM
+OS: macOS 26.5.1 (25F80)
+Topology: one local master, five local nginx/WebDAV volumes, replicas=3,
+          subvolumes=10, release build, MINIKV_WORKERS=0,
+          MINIKV_VOLUME_POOL=8, MINIKV_PARALLEL_REPLICAS=false
+Upstream baseline: geohot/minikeyvalue 451d248, same local nginx topology
+```
+
+Comparable commands:
+
+```bash
+wrk -t2 -c100 -d10s --latency http://127.0.0.1:$PORT/key
+go run tools/thrasher.go -base http://127.0.0.1:$PORT -n 10000 -c 16
+```
+
+Results:
+
+| Implementation | Missing GET | 10k write/read/delete |
+| --- | ---: | ---: |
+| C++ rewrite | 173,036 req/s | 1,800/sec |
+| Go upstream on same machine | 163,872 req/s | 1,099-1,191/sec |
+| Previously reported upstream reference | 116,338 req/s | 3,815/sec |
+
+Interpretation: on this MacBook, the C++ rewrite is ahead of the same-machine
+Go baseline for both tested workloads. It has not reproduced the earlier
+3,815/sec upstream thrasher number, so do not treat that external number as a
+direct apples-to-apples regression target without matching hardware, OS,
+filesystem, nginx config, and process limits.
 
 Interpret benchmark failures carefully. With client-side keep-alive disabled,
 long short-connection runs can become a TCP TIME_WAIT / ephemeral-port
@@ -662,7 +701,7 @@ Production canary recommendation:
 - Test concurrency 16 only after TIME_WAIT, 5xx, fd count, RSS, and p99 latency
   stay stable.
 - Treat concurrency 32/64 write failures as a red line until the benchmark
-  client uses connection reuse and the volume pool width has been sized from
+  client uses connection reuse and `MINIKV_VOLUME_POOL` has been sized from
   measured p99/fd/TIME_WAIT data.
 - Keep `MINIKV_PARALLEL_REPLICAS=false` unless you are running a controlled
   experiment with connection metrics.

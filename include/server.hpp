@@ -30,6 +30,7 @@ struct AppOptions {
   std::chrono::milliseconds multipart_upload_ttl{std::chrono::hours{24}};
   std::uint64_t max_body_size = 1024ULL * 1024ULL * 1024ULL;
   std::size_t http_workers = 0;
+  std::size_t volume_connection_pool = 8;
   bool parallel_replica_io = false;
 };
 

@@ -2,6 +2,7 @@
 #include "rebalance.hpp"
 #include "rebuild.hpp"
 #include "server.hpp"
+#include "volume_client.hpp"
 
 #include <cstddef>
 #include <exception>
@@ -55,6 +56,8 @@ int main(int argc, char **argv) {
     std::cout << '\n';
 
     auto app = minikv::server::App{parsed.options.app};
+    minikv::volume_client::setConnectionPoolWidth(
+        parsed.options.app.volume_connection_pool);
     auto server = minikv::http::Server{};
     minikv::server::registerRoutes(server, app);
 

@@ -16,6 +16,7 @@ ExecStart=/usr/local/bin/mkv \
   -multipartttl ${MINIKV_MULTIPART_TTL} \
   -maxbodysize ${MINIKV_MAX_BODY_SIZE} \
   -workers ${MINIKV_WORKERS} \
+  -volumepool ${MINIKV_VOLUME_POOL} \
   -parallelreplicas ${MINIKV_PARALLEL_REPLICAS} \
   ${MINIKV_EXTRA_ARGS} \
   server

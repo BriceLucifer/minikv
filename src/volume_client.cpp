@@ -9,9 +9,9 @@
 #include <array>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
-#include <future>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -76,24 +76,6 @@ std::string connectionKey(const ParsedUrl &url) {
   return url.host + ":" + url.port;
 }
 
-template <typename Future, typename Cancel>
-void waitForOperation(asio::io_context &ioc, Future &future,
-                      std::chrono::milliseconds timeout, Cancel cancel) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (future.wait_for(std::chrono::milliseconds{0}) !=
-         std::future_status::ready) {
-    ioc.restart();
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) {
-      cancel();
-      ioc.restart();
-      ioc.run();
-      throw std::runtime_error("volume http request timed out");
-    }
-    ioc.run_for(deadline - now);
-  }
-}
-
 void requireStatus(std::string_view op, int actual,
                    std::initializer_list<int> expected) {
   for (const auto status : expected) {
@@ -108,9 +90,9 @@ void requireStatus(std::string_view op, int actual,
 
 class PooledConnection {
 public:
-  PooledConnection(std::string host, std::string port)
-      : host_(std::move(host)), port_(std::move(port)), resolver_(ioc_),
-        stream_(ioc_) {}
+  PooledConnection(std::string host, std::string port, asio::io_context &ioc)
+      : host_(std::move(host)), port_(std::move(port)), resolver_(ioc),
+        stream_(ioc) {}
 
   http::ClientResponse request(std::string_view method, std::string_view target,
                                std::string_view body,
@@ -144,18 +126,9 @@ private:
     }
 
     buffer_.consume(buffer_.size());
-    ioc_.restart();
-    auto resolve_future =
-        resolver_.async_resolve(host_, port_, asio::use_future);
-    waitForOperation(ioc_, resolve_future, timeout,
-                     [this] { resolver_.cancel(); });
-    const auto endpoints = resolve_future.get();
-
+    const auto endpoints = resolver_.resolve(host_, port_);
     stream_.expires_after(timeout);
-    auto connect_future = stream_.async_connect(endpoints, asio::use_future);
-    waitForOperation(ioc_, connect_future, timeout,
-                     [this] { stream_.cancel(); });
-    [[maybe_unused]] const auto connected_endpoint = connect_future.get();
+    stream_.connect(endpoints);
     connected_ = true;
   }
 
@@ -179,20 +152,14 @@ private:
     req.prepare_payload();
 
     stream_.expires_after(timeout);
-    auto write_future = bhttp::async_write(stream_, req, asio::use_future);
-    waitForOperation(ioc_, write_future, timeout, [this] { stream_.cancel(); });
-    [[maybe_unused]] const auto bytes_written = write_future.get();
+    bhttp::write(stream_, req);
 
     auto out = http::ClientResponse{};
     if (lowercase(method) == "head") {
       auto parser = bhttp::response_parser<bhttp::empty_body>{};
       parser.skip(true);
       stream_.expires_after(timeout);
-      auto read_future =
-          bhttp::async_read(stream_, buffer_, parser, asio::use_future);
-      waitForOperation(ioc_, read_future, timeout,
-                       [this] { stream_.cancel(); });
-      [[maybe_unused]] const auto bytes_read = read_future.get();
+      bhttp::read(stream_, buffer_, parser);
       const auto &res = parser.get();
       out.status = static_cast<int>(res.result_int());
       for (const auto &field : res.base()) {
@@ -205,11 +172,7 @@ private:
     } else {
       auto res = bhttp::response<bhttp::string_body>{};
       stream_.expires_after(timeout);
-      auto read_future =
-          bhttp::async_read(stream_, buffer_, res, asio::use_future);
-      waitForOperation(ioc_, read_future, timeout,
-                       [this] { stream_.cancel(); });
-      [[maybe_unused]] const auto bytes_read = read_future.get();
+      bhttp::read(stream_, buffer_, res);
       out.status = static_cast<int>(res.result_int());
       out.body = res.body();
       for (const auto &field : res.base()) {
@@ -226,7 +189,6 @@ private:
 
   std::string host_;
   std::string port_;
-  asio::io_context ioc_;
   tcp::resolver resolver_;
   beast::tcp_stream stream_;
   beast::flat_buffer buffer_;
@@ -234,25 +196,66 @@ private:
   std::mutex mutex_;
 };
 
+class EndpointPool {
+public:
+  EndpointPool(const std::string &host, const std::string &port,
+               std::size_t width)
+      : width_(std::max<std::size_t>(1, width)) {
+    connections_.reserve(width_);
+    for (auto i = std::size_t{0}; i < width_; ++i) {
+      connections_.push_back(
+          std::make_shared<PooledConnection>(host, port, ioc_));
+    }
+  }
+
+  [[nodiscard]] std::size_t width() const { return width_; }
+
+  http::ClientResponse request(std::string_view method, std::string_view target,
+                               std::string_view body,
+                               std::chrono::milliseconds timeout) {
+    auto connection = std::shared_ptr<PooledConnection>{};
+    {
+      auto lock = std::scoped_lock{mutex_};
+      connection = connections_[next_ % connections_.size()];
+      ++next_;
+    }
+    return connection->request(method, target, body, timeout);
+  }
+
+  void close() {
+    for (auto &connection : connections_) {
+      connection->close();
+    }
+  }
+
+private:
+  std::size_t width_;
+  asio::io_context ioc_;
+  std::vector<std::shared_ptr<PooledConnection>> connections_;
+  std::size_t next_ = 0;
+  std::mutex mutex_;
+};
+
 auto connection_cache_mutex = std::mutex{};
-auto connection_cache =
-    std::map<std::string, std::shared_ptr<PooledConnection>>{};
+auto connection_pool_width = std::size_t{8};
+auto connection_cache = std::map<std::string, std::shared_ptr<EndpointPool>>{};
 
 http::ClientResponse
 pooledRequest(std::string_view method, std::string_view url,
               std::string_view body = {},
               std::chrono::milliseconds timeout = std::chrono::seconds{30}) {
   const auto parsed = parseHttpUrl(url);
-  auto connection = std::shared_ptr<PooledConnection>{};
+  auto pool = std::shared_ptr<EndpointPool>{};
   {
     auto lock = std::scoped_lock{connection_cache_mutex};
     auto &cached = connection_cache[connectionKey(parsed)];
-    if (!cached) {
-      cached = std::make_shared<PooledConnection>(parsed.host, parsed.port);
+    if (!cached || cached->width() != connection_pool_width) {
+      cached = std::make_shared<EndpointPool>(parsed.host, parsed.port,
+                                              connection_pool_width);
     }
-    connection = cached;
+    pool = cached;
   }
-  return connection->request(method, parsed.target, body, timeout);
+  return pool->request(method, parsed.target, body, timeout);
 }
 
 } // namespace
@@ -325,7 +328,7 @@ void remotePutFiles(std::string_view url,
   bhttp::read(socket, response_buffer, response);
 
   auto ec = boost::system::error_code{};
-  (void)socket.shutdown(tcp::socket::shutdown_both, ec);
+  socket.shutdown(tcp::socket::shutdown_both, ec);
   requireStatus("remote_put_files", static_cast<int>(response.result_int()),
                 {201, 204});
 }
@@ -335,21 +338,39 @@ void remoteDelete(std::string_view url) {
   requireStatus("remote_delete", res.status, {204, 404});
 }
 
-void clearConnectionCache() {
-  auto connections = std::vector<std::shared_ptr<PooledConnection>>{};
+void setConnectionPoolWidth(std::size_t width) {
+  auto pools = std::vector<std::shared_ptr<EndpointPool>>{};
   {
     auto lock = std::scoped_lock{connection_cache_mutex};
-    for (auto &[_, connection] : connection_cache) {
-      if (connection) {
-        connections.push_back(connection);
+    connection_pool_width = std::max<std::size_t>(1, width);
+    for (auto &[_, pool] : connection_cache) {
+      if (pool) {
+        pools.push_back(pool);
       }
     }
     connection_cache.clear();
   }
 
-  for (auto &connection : connections) {
-    if (connection) {
-      connection->close();
+  for (auto &pool : pools) {
+    pool->close();
+  }
+}
+
+void clearConnectionCache() {
+  auto pools = std::vector<std::shared_ptr<EndpointPool>>{};
+  {
+    auto lock = std::scoped_lock{connection_cache_mutex};
+    for (auto &[_, pool] : connection_cache) {
+      if (pool) {
+        pools.push_back(pool);
+      }
+    }
+    connection_cache.clear();
+  }
+
+  for (auto &pool : pools) {
+    if (pool) {
+      pool->close();
     }
   }
 }

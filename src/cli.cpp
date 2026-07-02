@@ -143,6 +143,8 @@ std::string usage() {
          "        Maximum accepted HTTP request body size (default 1G)\n"
          "  -workers int\n"
          "        HTTP worker threads, 0 uses a production keep-alive default\n"
+         "  -volumepool int\n"
+         "        Keep-alive connections per volume endpoint (default 8)\n"
          "  -parallelreplicas bool\n"
          "        Write and delete volume replicas concurrently (default "
          "false)\n"
@@ -251,6 +253,13 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
         result.error = "invalid -workers";
         return result;
       }
+    } else if (arg == "-volumepool") {
+      const auto value = nextValue(arg);
+      if (!result.error.empty() ||
+          !parseSizeT(value, result.options.app.volume_connection_pool)) {
+        result.error = "invalid -volumepool";
+        return result;
+      }
     } else if (arg == "-parallelreplicas") {
       const auto value = nextValue(arg);
       if (!result.error.empty() ||
@@ -311,6 +320,12 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
 
   if (result.options.app.http_workers > 1024) {
     result.error = "invalid -workers";
+    return result;
+  }
+
+  if (result.options.app.volume_connection_pool == 0 ||
+      result.options.app.volume_connection_pool > 256) {
+    result.error = "invalid -volumepool";
     return result;
   }
 

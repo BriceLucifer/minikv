@@ -40,6 +40,7 @@ TEST(CliTest, ParsesServerCommandAndGoStyleDefaults) {
   EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{24});
   EXPECT_EQ(result.options.app.max_body_size, 1024ULL * 1024ULL * 1024ULL);
   EXPECT_EQ(result.options.app.http_workers, 0U);
+  EXPECT_EQ(result.options.app.volume_connection_pool, 8U);
   EXPECT_FALSE(result.options.app.parallel_replica_io);
 }
 
@@ -67,6 +68,8 @@ TEST(CliTest, ParsesConfiguredFlags) {
       "512M",
       "-workers",
       "32",
+      "-volumepool",
+      "16",
       "-parallelreplicas",
       "true",
       "-v",
@@ -86,6 +89,7 @@ TEST(CliTest, ParsesConfiguredFlags) {
   EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{2});
   EXPECT_EQ(result.options.app.max_body_size, 512ULL * 1024ULL * 1024ULL);
   EXPECT_EQ(result.options.app.http_workers, 32U);
+  EXPECT_EQ(result.options.app.volume_connection_pool, 16U);
   EXPECT_TRUE(result.options.app.parallel_replica_io);
   EXPECT_TRUE(result.options.verbose);
 }
@@ -210,6 +214,18 @@ TEST(CliTest, RejectsInvalidProductionSizingFlags) {
   });
   EXPECT_FALSE(bad_workers.ok);
   EXPECT_EQ(bad_workers.error, "invalid -workers");
+
+  const auto bad_volume_pool = parse({
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "-volumepool",
+      "0",
+      "server",
+  });
+  EXPECT_FALSE(bad_volume_pool.ok);
+  EXPECT_EQ(bad_volume_pool.error, "invalid -volumepool");
 
   const auto bad_parallel_replicas = parse({
       "-db",

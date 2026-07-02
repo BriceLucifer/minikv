@@ -19,12 +19,14 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     `HEAD` returns direct metadata so real S3/PyArrow clients work reliably.
   - Latest verification: strict HTTP/S3 compatibility tests pass against a
     temporary five-volume nginx/WebDAV deploy, and the full debug test suite
-    passes with `98/98` tests.
+    passes with `101/101` tests.
   - The C++ rewrite is now ahead of upstream for S3 metadata, AWS chunked
     upload compatibility, runtime multipart cleanup, streaming multipart
     completion, deploy templates, and bounded worker execution.
-  - Remaining production-complete gaps are benchmark evidence from a real
-    release deployment and live monitoring/alert validation.
+  - Local release benchmark evidence is now recorded in README for both the
+    C++ rewrite and upstream Go on the same MacBook/nginx topology. Remaining
+    production-complete gaps are staging benchmark evidence and live
+    monitoring/alert validation.
   - Production hardening now includes a configurable HTTP body limit, pinned
     fetched dependency revisions, defensive placement validation, S3-style XML
     error bodies for common failures, and concrete backup/restore/monitoring
@@ -45,6 +47,8 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     real `requests` clients against the same five-volume deploy topology.
   - Production deploy templates now cover systemd master, systemd nginx volume
     instances, nginx/WebDAV volume config, and master environment config.
+  - HTTP/1.1 keep-alive, master-to-volume keep-alive pooling, configurable
+    `-volumepool`, and `tools/thrasher.go` benchmark parity tooling.
   - S3 `HEAD` returns direct object metadata for real S3 clients, and AWS SDK
     `aws-chunked` streaming payloads are decoded before replica writes.
   - S3 listings now include bucket/list metadata and object `LastModified` /
@@ -96,20 +100,14 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - Tests for CLI parsing, server read/write/delete flows, route wiring, and
     volume client behavior.
 - Latest verified commands:
-  - `tests/ensure_python_test_env.sh` synced the repository-local `.venv` from
-    `pyproject.toml` with `uv`.
   - `cmake --build --preset debug`
-  - `ctest --preset debug -R 'HttpAdapterTest|CliTest|PlacementTest|ServerRouteTest' --output-on-failure`
-  - `MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 ctest --preset debug -R
-    UpstreamCompatTest --output-on-failure`
-  - `./build/debug/tests/mkv_tests --gtest_filter='HttpAdapterTest.AcceptsLargeRequestBodies:ServerRouteTest.GetAndHeadRoutesReturnRedirectLocation:ServerRouteTest.PutRouteDecodesAwsChunkedPayloads:ServerRouteTest.S3Multipart*:CliTest.*:ServerAppTest.StoresOptions'`
-  - `./build/debug/tests/mkv_tests --gtest_filter='HashTest.*:VolumeClientTest.*:ServerRouteTest.S3Multipart*:ServerAppTest.StoresOptions'`
-  - `MINIKV_REQUIRE_S3_COMPAT_DEPS=1 ctest --preset debug -R S3CompatTest
-    --output-on-failure` passed with boto3, PyArrow, and the large multipart
-    parquet roundtrip.
-  - `ctest --preset debug` with `98/98 tests passed`
-  - `cmake --preset release`
+  - `ctest --preset debug --output-on-failure` with `101/101 tests passed`
   - `cmake --build --preset release`
+  - `clangd --check=src/volume_client.cpp --compile-commands-dir=build/debug`
+    completed with `0 errors`
+  - `clang-tidy -p build/debug src/volume_client.cpp src/http.cpp
+    src/server.cpp --quiet` completed without warnings
+  - `go run tools/thrasher.go -h` verified the checked-in thrasher tool
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -196,11 +194,13 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
    - Remaining: broaden XML error coverage for read/list misses such as
      `NoSuchKey` and bucket-shaped path misses where clients depend on those
      exact codes.
-2. Add production benchmark evidence.
-   - Run a repeatable deploy benchmark against the five-volume topology for
-     PUT/GET/DELETE throughput, MiB/s, latency percentiles, and error counts.
+2. Promote benchmark evidence from local to staging.
+   - Local MacBook benchmark evidence is recorded in README. Repeat it on a
+     production-like Linux host with persistent disks, fixed process limits,
+     `wrk`, `tools/thrasher.go`, fd/TIME_WAIT capture, and perf/flamegraphs.
    - Record release-build hardware, object size mix, replica count, worker
-     count, and disk path in README/TODO so results are comparable later.
+     count, volume pool width, and disk path in README/TODO so results remain
+     comparable later.
 3. Validate AI-agent memory operations runbooks in staging.
    - README now documents key naming, retention, lifecycle cleanup,
      backup/restore drills, rebuild/rebalance procedures, and recommended

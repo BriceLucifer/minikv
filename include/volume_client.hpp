@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -29,6 +30,7 @@ void remotePutFiles(std::string_view url,
                     const std::vector<std::filesystem::path> &paths,
                     std::uint64_t content_length);
 void remoteDelete(std::string_view url);
+void setConnectionPoolWidth(std::size_t width);
 void clearConnectionCache();
 
 } // namespace minikv::volume_client
