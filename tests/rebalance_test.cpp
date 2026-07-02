@@ -3,6 +3,7 @@
 #include "index.hpp"
 #include "placement.hpp"
 #include "record.hpp"
+#include "volume_client.hpp"
 
 #include "http_test_util.hpp"
 #include <gtest/gtest.h>
@@ -44,6 +45,7 @@ public:
   }
 
   ~LocalVolumeServer() {
+    minikv::volume_client::clearConnectionCache();
     server.stop();
     if (worker_.joinable()) {
       worker_.join();

@@ -1,6 +1,8 @@
 #include "http.hpp"
 #include "volume_client.hpp"
 
+#include <boost/asio.hpp>
+#include <boost/beast.hpp>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -39,7 +41,10 @@ public:
     return "http://127.0.0.1:" + std::to_string(port_) + std::string(path);
   }
 
+  [[nodiscard]] int port() const { return port_; }
+
   ~LocalHttpServer() {
+    minikv::volume_client::clearConnectionCache();
     server.stop();
     if (worker_.joinable()) {
       worker_.join();
@@ -103,6 +108,40 @@ TEST(VolumeClientTest, RemotePutSendsBodyAndAcceptsCreated) {
   EXPECT_NO_THROW(
       minikv::volume_client::remotePut(local.url("/object"), "payload"));
   EXPECT_EQ(received_body, "payload");
+}
+
+TEST(VolumeClientTest, RemoteRequestsCanReusePersistentConnection) {
+  auto request_count = 0;
+  LocalHttpServer local;
+  local.setHandler([&](const minikv::http::Request &req) {
+    auto res = minikv::http::Response{};
+    ++request_count;
+    if (req.method == "HEAD") {
+      res.setHeader("Content-Length", "7");
+      return res;
+    }
+    if (req.method == "PUT") {
+      EXPECT_EQ(req.body, "payload");
+      res.status = 201;
+      return res;
+    }
+    if (req.method == "DELETE") {
+      res.status = 204;
+      return res;
+    }
+    res.status = 500;
+    return res;
+  });
+  local.start();
+
+  const auto head = minikv::volume_client::remoteHeadInfo(
+      local.url("/object"), std::chrono::milliseconds{250});
+  EXPECT_TRUE(head.found);
+  EXPECT_EQ(head.content_length, "7");
+  EXPECT_NO_THROW(
+      minikv::volume_client::remotePut(local.url("/object"), "payload"));
+  EXPECT_NO_THROW(minikv::volume_client::remoteDelete(local.url("/object")));
+  EXPECT_EQ(request_count, 3);
 }
 
 // remote_put(remote, length, body) also accepts HTTP 204.
@@ -348,4 +387,44 @@ TEST(HttpAdapterTest, CustomMethodsReachServerHandler) {
   const auto res = minikv::http::request("REBALANCE", local.url("/object"));
 
   EXPECT_EQ(res.status, 204);
+}
+
+TEST(HttpAdapterTest, KeepsHttp11ConnectionsAliveForMultipleRequests) {
+  auto requests = 0;
+  LocalHttpServer local;
+  local.setHandler([&](const minikv::http::Request &req) {
+    auto res = minikv::http::Response{};
+    ++requests;
+    res.setContent(req.path, "text/plain");
+    return res;
+  });
+  local.start();
+
+  namespace asio = boost::asio;
+  namespace beast = boost::beast;
+  namespace bhttp = boost::beast::http;
+  using tcp = asio::ip::tcp;
+
+  auto ioc = asio::io_context{};
+  auto socket = tcp::socket{ioc};
+  asio::connect(socket, tcp::resolver{ioc}.resolve(
+                            "127.0.0.1", std::to_string(local.port())));
+  auto buffer = beast::flat_buffer{};
+
+  for (const auto *path : {"/first", "/second"}) {
+    auto req = bhttp::request<bhttp::string_body>{bhttp::verb::get, path, 11};
+    req.set(bhttp::field::host, "127.0.0.1");
+    req.keep_alive(true);
+    bhttp::write(socket, req);
+
+    auto res = bhttp::response<bhttp::string_body>{};
+    bhttp::read(socket, buffer, res);
+    EXPECT_EQ(res.result_int(), 200U);
+    EXPECT_TRUE(res.keep_alive());
+    EXPECT_EQ(res.body(), path);
+  }
+
+  auto ec = boost::system::error_code{};
+  (void)socket.shutdown(tcp::socket::shutdown_both, ec);
+  EXPECT_EQ(requests, 2);
 }

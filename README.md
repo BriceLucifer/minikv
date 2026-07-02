@@ -303,12 +303,16 @@ Compatibility is verified by real deploy-style tests, not only unit tests:
 - `S3CompatTest` mirrors upstream `tools/s3test.py` with real boto3/PyArrow
   clients; strict mode requires those dependencies and runs the large parquet
   multipart roundtrip.
-- The current debug preset passes `ctest --preset debug` with all 98 tests.
+- The current debug preset passes `ctest --preset debug` with all 101 tests.
 
 The C++ rewrite is intentionally stronger than upstream in several places:
 
 - Bounded worker pool instead of one thread per accepted connection.
+- HTTP/1.1 keep-alive on inbound master requests with bounded requests per
+  connection and idle timeouts.
 - Timeout-aware remote volume client operations.
+- Ordinary master-to-volume `GET`/`HEAD`/`PUT`/`DELETE` calls reuse a
+  conservative per-volume keep-alive connection.
 - S3 `HEAD` returns direct object metadata while `GET` keeps upstream's 302
   redirect model.
 - S3 list entries include `Size`, `ETag`, `LastModified`, and `StorageClass`.
@@ -328,6 +332,12 @@ The C++ rewrite is intentionally stronger than upstream in several places:
 Known remaining gaps before calling the rewrite production-complete:
 
 - There is no checked-in benchmark report yet for the five-volume topology.
+- Multipart file streaming and simple standalone clients still use one-shot
+  HTTP connections; use a keep-alive capable benchmark client when measuring
+  the server's real CPU or disk limit.
+- The current master-to-volume keep-alive pool is deliberately conservative:
+  one serialized ordinary connection per volume endpoint. Raise pool width only
+  with fd, TIME_WAIT, p99, and replica error metrics in hand.
 - The master still materializes accepted `PUT` request bodies in memory up to
   `-maxbodysize`; size that limit for your object mix and worker count.
 - Authentication and TLS are expected to sit in front of the service; they are
@@ -440,7 +450,29 @@ deploy/minikv-volume@.service
 deploy/nginx-volume.conf.example
 ```
 
-One host can run several volume services by copying
+### 1. Build A Release Binary
+
+Build and test the same commit you plan to deploy:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+ctest --preset debug --output-on-failure
+```
+
+Install the binary:
+
+```bash
+sudo install -m 0755 build/release/mkv /usr/local/bin/mkv
+```
+
+Keep the deployed git commit, compiler, CMake preset, and dependency revisions
+with your release notes. LevelDB and BoringSSL are pinned by CMake.
+
+### 2. Deploy nginx Volume Services
+
+Each volume is an nginx/WebDAV server that owns one filesystem root. One host
+can run several volume services by copying
 `deploy/nginx-volume.conf.example` to `/etc/minikv/volume-1.conf`,
 `/etc/minikv/volume-2.conf`, and so on, then changing `listen`, `pid`, log, and
 `root` paths. Start them with systemd instance names:
@@ -448,29 +480,106 @@ One host can run several volume services by copying
 ```bash
 sudo install -d /etc/minikv /var/lib/minikv
 sudo cp deploy/minikv-volume@.service /etc/systemd/system/
+
 sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-1.conf
+sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-2.conf
+sudo cp deploy/nginx-volume.conf.example /etc/minikv/volume-3.conf
+
+# Edit each copied file:
+# - listen port, for example 3001, 3002, 3003
+# - pid path
+# - error_log path
+# - root path
+# - client_body_temp_path
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now minikv-volume@1
+sudo systemctl enable --now minikv-volume@2
+sudo systemctl enable --now minikv-volume@3
 ```
 
-Install and start the master:
+Volume ports should normally be private to the master and trusted clients. If
+volumes are reachable from untrusted networks, put authentication/TLS/firewall
+rules in front of them.
+
+Verify each volume before starting the master:
 
 ```bash
-sudo install -m 0755 build/release/mkv /usr/local/bin/mkv
+curl -i http://127.0.0.1:3001/
+curl -X PUT --data-binary test http://127.0.0.1:3001/smoke/object
+curl -i http://127.0.0.1:3001/smoke/object
+curl -X DELETE http://127.0.0.1:3001/smoke/object
+```
+
+### 3. Configure And Start The Master
+
+Install the master unit and env file:
+
+```bash
 sudo cp deploy/minikv-master.env.example /etc/minikv/master.env
 sudo cp deploy/minikv-master.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now minikv-master
 ```
 
 Edit `/etc/minikv/master.env` before starting production. `MINIKV_VOLUMES`
 must list every volume address the master should use, and
 `MINIKV_REPLICAS` must be no larger than that list. Keep `MINIKV_SUBVOLUMES`
 stable for an existing deployment unless you are deliberately rebalancing.
-Set `MINIKV_MAX_BODY_SIZE` to the largest accepted single request body. The
-default template uses `1G`, matching the upstream target object range, but the
-master can have roughly `active writes * max body size` resident before replica
-writes complete.
+
+Example single-host test deployment:
+
+```text
+MINIKV_PORT=3000
+MINIKV_DB=/var/lib/minikv/indexdb
+MINIKV_VOLUMES=127.0.0.1:3001,127.0.0.1:3002,127.0.0.1:3003
+MINIKV_REPLICAS=3
+MINIKV_SUBVOLUMES=10
+MINIKV_VOLTIMEOUT=1s
+MINIKV_MULTIPART_TTL=24h
+MINIKV_MAX_BODY_SIZE=1G
+MINIKV_WORKERS=0
+MINIKV_PARALLEL_REPLICAS=false
+MINIKV_EXTRA_ARGS=
+```
+
+Important production settings:
+
+- `MINIKV_MAX_BODY_SIZE`: largest accepted single request body. The master can
+  hold roughly `active writes * max body size` before replica writes complete.
+- `MINIKV_WORKERS`: HTTP worker threads. `0` uses a keep-alive aware automatic
+  default of at least 64. Because the current server handles each persistent
+  connection synchronously, size this above expected concurrent client
+  connections and watch p99 latency, RSS, fd count, and TIME_WAIT.
+- `MINIKV_PARALLEL_REPLICAS`: keep `false` for production by default. `true`
+  writes/deletes replicas concurrently, but it also increases simultaneous
+  volume pressure and should be enabled only with connection metrics.
+- `MINIKV_VOLTIMEOUT`: volume `HEAD` timeout used on read redirects. Keep it
+  low enough that a failed volume does not hold master workers for long.
+
+Start the master:
+
+```bash
+sudo systemctl enable --now minikv-master
+sudo systemctl status minikv-master
+```
+
+Run a master smoke test:
+
+```bash
+curl -i -X PUT --data-binary hello http://127.0.0.1:3000/smoke/hello
+curl -i http://127.0.0.1:3000/smoke/hello
+curl -L http://127.0.0.1:3000/smoke/hello
+curl -i -X DELETE http://127.0.0.1:3000/smoke/hello
+```
+
+Expected behavior:
+
+- `PUT` returns `201`.
+- `GET` without `-L` returns `302 Location: http://volume/...`.
+- `GET -L` returns the object bytes.
+- `DELETE` returns `204`.
+
+### 4. Preflight Gates
 
 Before accepting traffic, run the same gates used by this repo:
 
@@ -490,7 +599,10 @@ repository-local test environment:
 tests/ensure_python_test_env.sh
 ```
 
-Production runbook:
+Do not skip the deploy-style tests for a production release. They start real
+nginx/WebDAV volumes and catch failures that unit tests cannot see.
+
+### 5. Production Runbook
 
 - Backup: take filesystem snapshots of `/var/lib/minikv/indexdb` and every
   volume root together when possible. If snapshots cannot be atomic, snapshot
@@ -517,6 +629,8 @@ Production runbook:
 - Keep volume ports private to trusted clients or put authentication/TLS in
   front of the master and volumes.
 
+### 6. Benchmark And Readiness Gate
+
 Benchmark gate:
 
 ```bash
@@ -533,6 +647,25 @@ cmake --build --preset release
 Record hardware, filesystem, object size mix, replica count, subvolume count,
 worker count, `MINIKV_MAX_BODY_SIZE`, and volume paths with every benchmark so
 future changes are comparable.
+
+Interpret benchmark failures carefully. With client-side keep-alive disabled,
+long short-connection runs can become a TCP TIME_WAIT / ephemeral-port
+benchmark before they reveal the service's true CPU or disk limit. Track:
+
+```bash
+netstat -an | rg 'TIME_WAIT|CLOSE_WAIT' | wc -l
+```
+
+Production canary recommendation:
+
+- Start with write concurrency at or below 8.
+- Test concurrency 16 only after TIME_WAIT, 5xx, fd count, RSS, and p99 latency
+  stay stable.
+- Treat concurrency 32/64 write failures as a red line until the benchmark
+  client uses connection reuse and the volume pool width has been sized from
+  measured p99/fd/TIME_WAIT data.
+- Keep `MINIKV_PARALLEL_REPLICAS=false` unless you are running a controlled
+  experiment with connection metrics.
 
 ## Release Build
 

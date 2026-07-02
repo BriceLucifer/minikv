@@ -3,6 +3,7 @@
 #include "hash.hpp"
 #include "placement.hpp"
 #include "record.hpp"
+#include "volume_client.hpp"
 
 #include "http_test_util.hpp"
 #include <boost/json.hpp>
@@ -87,6 +88,7 @@ public:
   }
 
   ~LocalVolumeServer() {
+    minikv::volume_client::clearConnectionCache();
     server.stop();
     if (worker_.joinable()) {
       worker_.join();

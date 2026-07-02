@@ -176,7 +176,8 @@ Request fromBeastRequest(const bhttp::request<bhttp::string_body> &req) {
 }
 
 bhttp::response<bhttp::string_body> toBeastResponse(const Response &res,
-                                                    bool head_response) {
+                                                    bool head_response,
+                                                    bool request_keep_alive) {
   auto out = bhttp::response<bhttp::string_body>{
       static_cast<bhttp::status>(res.status), 11};
   for (const auto &[key, value] : res.headers) {
@@ -188,7 +189,7 @@ bhttp::response<bhttp::string_body> toBeastResponse(const Response &res,
   } else if (!out.has_content_length()) {
     out.content_length(res.body.size());
   }
-  out.keep_alive(false);
+  out.keep_alive(request_keep_alive);
   return out;
 }
 
@@ -196,7 +197,8 @@ bhttp::response<bhttp::string_body> toBeastResponse(const Response &res,
 
 std::size_t workerCount() {
   const auto count = std::thread::hardware_concurrency();
-  return std::max<std::size_t>(2, count == 0 ? 2 : count);
+  const auto scaled = count == 0 ? std::size_t{0} : count * 4;
+  return std::max<std::size_t>(64, scaled);
 }
 
 bool Request::hasParam(std::string_view key) const {
@@ -364,21 +366,36 @@ private:
   }
 
   void handleSession(tcp::socket socket) const {
+    auto stream = std::make_unique<beast::tcp_stream>(std::move(socket));
     try {
       auto buffer = beast::flat_buffer{};
-      auto parser = bhttp::request_parser<bhttp::string_body>{};
-      parser.body_limit(body_limit_);
-      bhttp::read(socket, buffer, parser);
-      auto req = parser.release();
+      auto requests_on_connection = std::size_t{0};
 
-      auto h = handler();
-      auto res = h ? h(fromBeastRequest(req))
-                   : Response{.status = 404, .headers = {}, .body = ""};
-      auto beast_res = toBeastResponse(res, req.method() == bhttp::verb::head);
-      bhttp::write(socket, beast_res);
+      while (!stopped_.load() && requests_on_connection < 100) {
+        auto parser = bhttp::request_parser<bhttp::string_body>{};
+        parser.body_limit(body_limit_);
+        stream->expires_after(std::chrono::seconds{5});
+        bhttp::read(*stream, buffer, parser);
+        auto req = parser.release();
+        ++requests_on_connection;
+
+        auto h = handler();
+        auto res = h ? h(fromBeastRequest(req))
+                     : Response{.status = 404, .headers = {}, .body = ""};
+        auto beast_res = toBeastResponse(res, req.method() == bhttp::verb::head,
+                                         req.keep_alive());
+        if (requests_on_connection >= 100) {
+          beast_res.keep_alive(false);
+        }
+        stream->expires_after(std::chrono::seconds{5});
+        bhttp::write(*stream, beast_res);
+        if (!beast_res.keep_alive()) {
+          break;
+        }
+      }
 
       auto ec = boost::system::error_code{};
-      (void)socket.shutdown(tcp::socket::shutdown_send, ec);
+      (void)stream->socket().shutdown(tcp::socket::shutdown_send, ec);
     } catch (const boost::system::system_error &ex) {
       if (ex.code() == bhttp::error::body_limit) {
         auto res = bhttp::response<bhttp::string_body>{
@@ -386,8 +403,8 @@ private:
         res.content_length(0);
         res.keep_alive(false);
         auto ec = boost::system::error_code{};
-        (void)bhttp::write(socket, res, ec);
-        (void)socket.shutdown(tcp::socket::shutdown_send, ec);
+        (void)bhttp::write(*stream, res, ec);
+        (void)stream->socket().shutdown(tcp::socket::shutdown_send, ec);
       }
     } catch (const std::exception &ex) {
       (void)ex;
@@ -503,6 +520,7 @@ ClientResponse request(std::string_view method, std::string_view url,
   req.target(parsed.target);
   req.set(bhttp::field::host, parsed.host + ":" + parsed.port);
   req.set(bhttp::field::user_agent, "minikv-beast");
+  req.keep_alive(false);
   if (!body.empty() || method == "PUT" || method == "POST") {
     req.set(bhttp::field::content_type, content_type);
     req.body() = toString(body);

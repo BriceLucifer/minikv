@@ -269,3 +269,54 @@ between synchronous blocking IO, disabled keep-alive, no outbound connection
 pooling, and aggressive short-connection benchmarks. The right next performance
 work is to reduce connection churn and add backpressure before chasing lower
 level techniques like io_uring.
+
+Follow-up: keep-alive and connection pooling
+--------------------------------------------
+The next round implemented the connection work first, because longer tests
+showed that even concurrency 8 can be polluted by short-lived TCP churn.
+
+What changed:
+
+- inbound HTTP/1.1 keep-alive on the master
+- a bounded 100 requests per client connection
+- 5 second idle/read/write timeouts per persistent connection
+- ordinary master-to-volume GET/HEAD/PUT/DELETE connection reuse
+- conservative one-connection-per-volume pooling with retry after a broken
+  pooled connection
+- multipart file streaming left as a one-shot connection to avoid occupying the
+  pooled ordinary request socket
+- explicit test cleanup for pooled volume connections
+
+The first c16 keep-alive benchmark still produced a small number of socket
+timeouts. That was not TIME_WAIT pressure. It exposed a different production
+truth: the current server is synchronous per connection, so each persistent
+client connection occupies one HTTP worker until the connection closes or times
+out. With the old automatic worker count based only on CPU cores, keep-alive
+clients could starve queued accepted sockets.
+
+The default worker policy was therefore changed from hardware concurrency to a
+keep-alive aware value:
+
+- MINIKV_WORKERS=0 now maps to max(64, hardware_concurrency * 4)
+- production deployments should still size workers above expected concurrent
+  keep-alive client connections and monitor fd count, RSS, TIME_WAIT, and p99
+
+Release benchmark samples after the fix, using a keep-alive capable Python
+client, five nginx volumes, replicas=3, 64 KiB objects, and fixed 600 operation
+samples:
+
+- c16 missing GET: 9.55k RPS, p99 1.63 ms, 0 errors
+- c16 GET redirect: 10.09k RPS, p99 0.76 ms, 0 errors
+- c16 GET follow: 5.36k RPS, 334.8 MiB/s, p99 3.69 ms, 0 errors
+- c16 PUT+DELETE: 1.66k RPS, 104.1 MiB/s, p99 13.79 ms, 0 errors
+- c32 GET follow canary: 5.05k RPS, 315.7 MiB/s, p99 10.18 ms, 0 errors
+- c32 PUT+DELETE canary: 1.54k RPS, 96.1 MiB/s, p99 33.42 ms, 0 errors
+
+Interpretation:
+
+- connection churn is no longer the first bottleneck in these samples
+- write throughput does not scale from c16 to c32, so the next real bottleneck
+  is likely replica write serialization, nginx volume behavior, disk/file IO,
+  LevelDB metadata writes, or key-level locking distribution
+- the next profiling pass should use Linux perf/flamegraphs on the target host,
+  with client keep-alive enabled and TIME_WAIT/fd counts recorded as metadata

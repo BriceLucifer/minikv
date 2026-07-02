@@ -142,7 +142,7 @@ std::string usage() {
          "  -maxbodysize bytes\n"
          "        Maximum accepted HTTP request body size (default 1G)\n"
          "  -workers int\n"
-         "        HTTP worker threads, 0 uses hardware concurrency\n"
+         "        HTTP worker threads, 0 uses a production keep-alive default\n"
          "  -parallelreplicas bool\n"
          "        Write and delete volume replicas concurrently (default "
          "false)\n"
