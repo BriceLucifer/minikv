@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <format>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,16 @@ std::string key2path(std::string_view key) {
 std::vector<std::string> key2volume(std::string_view key,
                                     const std::vector<std::string> &volumes,
                                     int count, int svcount) {
+  if (count < 0) {
+    throw std::invalid_argument("replica count must be non-negative");
+  }
+  if (svcount <= 0) {
+    throw std::invalid_argument("subvolume count must be positive");
+  }
+  if (static_cast<std::size_t>(count) > volumes.size()) {
+    throw std::invalid_argument("replica count exceeds volume count");
+  }
+
   auto sortvols = byScore{};
   sortvols.reserve(volumes.size());
 

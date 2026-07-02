@@ -39,6 +39,7 @@ TEST(CliTest, ParsesServerCommandAndGoStyleDefaults) {
   EXPECT_TRUE(result.options.app.md5sum);
   EXPECT_EQ(result.options.app.volume_timeout, std::chrono::seconds{1});
   EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{24});
+  EXPECT_EQ(result.options.app.max_body_size, 1024ULL * 1024ULL * 1024ULL);
 }
 
 TEST(CliTest, ParsesConfiguredFlags) {
@@ -61,6 +62,8 @@ TEST(CliTest, ParsesConfiguredFlags) {
       "250ms",
       "-multipartttl",
       "2h",
+      "-maxbodysize",
+      "512M",
       "-v",
       "server",
   });
@@ -76,6 +79,7 @@ TEST(CliTest, ParsesConfiguredFlags) {
   EXPECT_FALSE(result.options.app.md5sum);
   EXPECT_EQ(result.options.app.volume_timeout, std::chrono::milliseconds{250});
   EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{2});
+  EXPECT_EQ(result.options.app.max_body_size, 512ULL * 1024ULL * 1024ULL);
   EXPECT_TRUE(result.options.verbose);
 }
 
@@ -137,4 +141,54 @@ TEST(CliTest, AcceptsRebuildAndRebalanceCommandsForParity) {
   EXPECT_EQ(rebuild.options.command, "rebuild");
   EXPECT_TRUE(rebalance.ok) << rebalance.error;
   EXPECT_EQ(rebalance.options.command, "rebalance");
+}
+
+TEST(CliTest, RejectsInvalidProductionSizingFlags) {
+  const auto bad_port = parse({
+      "-port",
+      "70000",
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "server",
+  });
+  EXPECT_FALSE(bad_port.ok);
+  EXPECT_EQ(bad_port.error, "invalid -port");
+
+  const auto bad_replicas = parse({
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "-replicas",
+      "0",
+      "server",
+  });
+  EXPECT_FALSE(bad_replicas.ok);
+  EXPECT_EQ(bad_replicas.error, "invalid -replicas");
+
+  const auto bad_subvolumes = parse({
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "-subvolumes",
+      "0",
+      "server",
+  });
+  EXPECT_FALSE(bad_subvolumes.ok);
+  EXPECT_EQ(bad_subvolumes.error, "invalid -subvolumes");
+
+  const auto bad_body_size = parse({
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "-maxbodysize",
+      "0",
+      "server",
+  });
+  EXPECT_FALSE(bad_body_size.ok);
+  EXPECT_EQ(bad_body_size.error, "invalid -maxbodysize");
 }

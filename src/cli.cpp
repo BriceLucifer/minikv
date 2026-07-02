@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <charconv>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -77,6 +79,43 @@ bool parseDuration(std::string_view value, std::chrono::milliseconds &out) {
   return true;
 }
 
+bool parseByteSize(std::string_view value, std::uint64_t &out) {
+  auto multiplier = std::uint64_t{1};
+  if (value.ends_with("KiB") || value.ends_with("KIB")) {
+    value.remove_suffix(3);
+    multiplier = 1024ULL;
+  } else if (value.ends_with("MiB") || value.ends_with("MIB")) {
+    value.remove_suffix(3);
+    multiplier = 1024ULL * 1024ULL;
+  } else if (value.ends_with("GiB") || value.ends_with("GIB")) {
+    value.remove_suffix(3);
+    multiplier = 1024ULL * 1024ULL * 1024ULL;
+  } else if (value.ends_with('K') || value.ends_with('k')) {
+    value.remove_suffix(1);
+    multiplier = 1024ULL;
+  } else if (value.ends_with('M') || value.ends_with('m')) {
+    value.remove_suffix(1);
+    multiplier = 1024ULL * 1024ULL;
+  } else if (value.ends_with('G') || value.ends_with('g')) {
+    value.remove_suffix(1);
+    multiplier = 1024ULL * 1024ULL * 1024ULL;
+  }
+
+  auto amount = std::uint64_t{0};
+  const auto *begin = value.data();
+  const auto *end = value.data() + value.size();
+  const auto result = std::from_chars(begin, end, amount);
+  if (result.ec != std::errc{} || result.ptr != end || amount == 0) {
+    return false;
+  }
+  if (amount > std::numeric_limits<std::uint64_t>::max() / multiplier) {
+    return false;
+  }
+
+  out = amount * multiplier;
+  return true;
+}
+
 } // namespace
 
 std::string usage() {
@@ -87,6 +126,8 @@ std::string usage() {
          "        Fallback server for missing keys\n"
          "  -multipartttl duration\n"
          "        TTL for abandoned multipart uploads (default 24h)\n"
+         "  -maxbodysize bytes\n"
+         "        Maximum accepted HTTP request body size (default 1G)\n"
          "  -port int\n"
          "        Port for the server to listen on (default 3000)\n"
          "  -protect\n"
@@ -176,6 +217,13 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
         result.error = "invalid -multipartttl";
         return result;
       }
+    } else if (arg == "-maxbodysize") {
+      const auto value = nextValue(arg);
+      if (!result.error.empty() ||
+          !parseByteSize(value, result.options.app.max_body_size)) {
+        result.error = "invalid -maxbodysize";
+        return result;
+      }
     } else if (arg.starts_with('-')) {
       result.error = "unknown flag " + std::string{arg};
       return result;
@@ -201,6 +249,21 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
   if (static_cast<int>(result.options.app.volumes.size()) <
       result.options.app.replicas) {
     result.error = "Need at least as many volumes as replicas";
+    return result;
+  }
+
+  if (result.options.port <= 0 || result.options.port > 65535) {
+    result.error = "invalid -port";
+    return result;
+  }
+
+  if (result.options.app.replicas <= 0) {
+    result.error = "invalid -replicas";
+    return result;
+  }
+
+  if (result.options.app.subvolumes <= 0) {
+    result.error = "invalid -subvolumes";
     return result;
   }
 

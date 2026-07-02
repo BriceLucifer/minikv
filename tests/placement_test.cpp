@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -34,6 +35,17 @@ TEST(PlacementTest, Key2VolumeOmitsSubvolumeWhenCountIsOne) {
 
   EXPECT_EQ(minikv::placement::key2volume("hello", volumes, 1, 1),
             std::vector<std::string>{"larry"});
+}
+
+TEST(PlacementTest, Key2VolumeRejectsInvalidConfiguration) {
+  const auto volumes = std::vector<std::string>{"larry", "moe", "curly"};
+
+  EXPECT_THROW(minikv::placement::key2volume("hello", volumes, -1, 1),
+               std::invalid_argument);
+  EXPECT_THROW(minikv::placement::key2volume("hello", volumes, 4, 1),
+               std::invalid_argument);
+  EXPECT_THROW(minikv::placement::key2volume("hello", volumes, 1, 0),
+               std::invalid_argument);
 }
 
 TEST(PlacementTest, NeedsRebalanceComparesVolumeOrder) {

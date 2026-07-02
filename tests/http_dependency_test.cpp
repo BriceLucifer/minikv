@@ -44,3 +44,21 @@ TEST(HttpAdapterTest, AcceptsLargeRequestBodies) {
   EXPECT_EQ(res.status, 200);
   EXPECT_EQ(res.body, std::to_string(body.size()));
 }
+
+TEST(HttpAdapterTest, RejectsRequestBodiesOverConfiguredLimit) {
+  minikv::test::LocalHttpServer server;
+  server.server.setBodyLimit(4);
+  server.server.setHandler([](const minikv::http::Request &) {
+    auto res = minikv::http::Response{};
+    res.status = 200;
+    return res;
+  });
+  server.start();
+
+  const auto res =
+      minikv::http::request("PUT", "http://" + server.volume() + "/too-large",
+                            "12345", "application/octet-stream");
+
+  EXPECT_EQ(res.status, 413);
+  EXPECT_TRUE(res.body.empty());
+}

@@ -19,13 +19,16 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     `HEAD` returns direct metadata so real S3/PyArrow clients work reliably.
   - Latest verification: strict HTTP/S3 compatibility tests pass against a
     temporary five-volume nginx/WebDAV deploy, and the full debug test suite
-    passes with `94/94` tests.
+    passes with `98/98` tests.
   - The C++ rewrite is now ahead of upstream for S3 metadata, AWS chunked
     upload compatibility, runtime multipart cleanup, streaming multipart
     completion, deploy templates, and bounded worker execution.
-  - Remaining production-complete gaps are benchmark evidence, AWS-style S3 XML
-    errors, and concrete backup/restore/monitoring/capacity runbooks for an AI
-    agent memory deployment.
+  - Remaining production-complete gaps are benchmark evidence from a real
+    release deployment and live monitoring/alert validation.
+  - Production hardening now includes a configurable HTTP body limit, pinned
+    fetched dependency revisions, defensive placement validation, S3-style XML
+    error bodies for common failures, and concrete backup/restore/monitoring
+    runbook guidance.
 - Recently completed work includes:
   - Upstream README parity review for the core API, nginx volume model,
     rebuild/rebalance workflow, and S3 compatibility subset.
@@ -96,6 +99,7 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - `tests/ensure_python_test_env.sh` synced the repository-local `.venv` from
     `pyproject.toml` with `uv`.
   - `cmake --build --preset debug`
+  - `ctest --preset debug -R 'HttpAdapterTest|CliTest|PlacementTest|ServerRouteTest' --output-on-failure`
   - `MINIKV_REQUIRE_HTTP_COMPAT_DEPS=1 ctest --preset debug -R
     UpstreamCompatTest --output-on-failure`
   - `./build/debug/tests/mkv_tests --gtest_filter='HttpAdapterTest.AcceptsLargeRequestBodies:ServerRouteTest.GetAndHeadRoutesReturnRedirectLocation:ServerRouteTest.PutRouteDecodesAwsChunkedPayloads:ServerRouteTest.S3Multipart*:CliTest.*:ServerAppTest.StoresOptions'`
@@ -103,7 +107,9 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
   - `MINIKV_REQUIRE_S3_COMPAT_DEPS=1 ctest --preset debug -R S3CompatTest
     --output-on-failure` passed with boto3, PyArrow, and the large multipart
     parquet roundtrip.
-  - `ctest --preset debug` with `94/94 tests passed`
+  - `ctest --preset debug` with `98/98 tests passed`
+  - `cmake --preset release`
+  - `cmake --build --preset release`
 - Local environment note: `nginx` is installed on this machine and the CTest
   suite now includes `NginxSmokeTest`.
 
@@ -185,20 +191,22 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 ## Next
 
 1. Improve S3 error compatibility.
-   - Return AWS-style XML error bodies for common S3 failures:
-     `NoSuchKey`, `NoSuchBucket`-style path misses where applicable,
-     `AccessDenied`/overwrite rejection, malformed XML, invalid part number,
-     unknown upload id, and missing multipart parts.
-   - Keep the existing status-code behavior compatible with upstream tests.
+   - Done for common write/multipart failures: `AccessDenied`, `MalformedXML`,
+     `InvalidArgument`, and `NoSuchUpload`.
+   - Remaining: broaden XML error coverage for read/list misses such as
+     `NoSuchKey` and bucket-shaped path misses where clients depend on those
+     exact codes.
 2. Add production benchmark evidence.
    - Run a repeatable deploy benchmark against the five-volume topology for
      PUT/GET/DELETE throughput, MiB/s, latency percentiles, and error counts.
    - Record release-build hardware, object size mix, replica count, worker
      count, and disk path in README/TODO so results are comparable later.
-3. Add AI-agent memory operations runbooks.
-   - Document key naming, retention, lifecycle cleanup, backup/restore drills,
-     rebuild/rebalance procedures, and recommended external metadata/vector DB
-     integration.
+3. Validate AI-agent memory operations runbooks in staging.
+   - README now documents key naming, retention, lifecycle cleanup,
+     backup/restore drills, rebuild/rebalance procedures, and recommended
+     external metadata/vector DB integration.
+   - Remaining: run the documented restore and rebalance drills against a real
+     staging topology and record operator timings/failure modes.
 4. Keep upstream parity checks current.
    - Compare local HTTP/S3 harnesses against upstream `tools/test.py` and
      `tools/s3test.py` whenever upstream changes.
@@ -207,16 +215,17 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 - S3 compatibility:
   - Current multipart support matches the upstream route shape and covers the
-    real boto3/PyArrow workflows, but S3 error responses are still minimal
-    compared with AWS XML error documents.
+    real boto3/PyArrow workflows. Common write/multipart failures now return
+    S3-style XML errors, but read/list miss coverage is still not complete AWS
+    compatibility.
 - Operational parity:
-  - The C++ adapter now uses bounded server workers and timeout-aware async
-    client operations, but it is not yet tuned like Go's `net/http` stack for
-    high concurrency.
+  - The C++ adapter now uses bounded server workers, timeout-aware async client
+    operations, and a configurable request body limit, but it is not yet tuned
+    like Go's `net/http` stack for high concurrency.
 - AI agent memory foundation:
   - The README describes using minikv for raw artifacts alongside a metadata DB
-    and vector DB, but there is not yet a concrete lifecycle/retention,
-    backup/restore, or monitoring runbook.
+    and vector DB and now includes lifecycle, retention, backup/restore, and
+    monitoring runbook guidance. Staging validation remains to be recorded.
 
 ## Useful Commands
 

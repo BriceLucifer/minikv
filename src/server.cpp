@@ -69,10 +69,29 @@ std::string joinVolumes(const std::vector<std::string> &volumes) {
   return joined;
 }
 
+std::string xmlEscape(std::string_view value);
+
 http::Response makeEmptyResponse(int status) {
   auto res = http::Response{};
   res.status = status;
   res.setHeader("Content-Length", "0");
+  return res;
+}
+
+http::Response makeS3ErrorResponse(int status, std::string_view code,
+                                   std::string_view message,
+                                   std::string_view resource) {
+  auto body = std::ostringstream{};
+  body << "<Error><Code>" << xmlEscape(code) << "</Code><Message>"
+       << xmlEscape(message) << "</Message>";
+  if (!resource.empty()) {
+    body << "<Resource>" << xmlEscape(resource) << "</Resource>";
+  }
+  body << "</Error>";
+
+  auto res = http::Response{};
+  res.status = status;
+  res.setContent(body.str(), "application/xml");
   return res;
 }
 
@@ -974,7 +993,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
     }
 
     if (app.getRecord(req.path).deleted == record::Deleted::NO) {
-      return makeEmptyResponse(403);
+      return makeS3ErrorResponse(403, "AccessDenied",
+                                 "Object already exists", req.path);
     }
 
     if (const auto part_number = req.getParamValue("partNumber");
@@ -984,12 +1004,19 @@ http::Response handleRequest(App &app, const http::Request &req) {
           parsed_part_number == 0 ||
           parsed_part_number >
               static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-        return makeEmptyResponse(403);
+        return makeS3ErrorResponse(400, "InvalidArgument",
+                                   "Invalid multipart part number", req.path);
       }
 
-      auto res = makeEmptyResponse(
-          app.writeMultipartPart(req.getParamValue("uploadId"),
-                                 static_cast<int>(parsed_part_number), body));
+      const auto part_status = app.writeMultipartPart(
+          req.getParamValue("uploadId"), static_cast<int>(parsed_part_number),
+          body);
+      if (part_status == 403) {
+        return makeS3ErrorResponse(404, "NoSuchUpload",
+                                   "Multipart upload does not exist", req.path);
+      }
+
+      auto res = makeEmptyResponse(part_status);
       if (res.status == 200) {
         res.setHeader("ETag", quotedEtag(body));
       }
@@ -1014,6 +1041,11 @@ http::Response handleRequest(App &app, const http::Request &req) {
     const auto operation = firstQueryOperation(req);
     if (operation == "uploads") {
       const auto result = app.createMultipartUpload(req.path);
+      if (result.status == 403) {
+        return makeS3ErrorResponse(403, "AccessDenied",
+                                   "Object already exists", req.path);
+      }
+
       auto res = http::Response{};
       res.status = result.status;
       if (!result.body.empty()) {
@@ -1029,15 +1061,29 @@ http::Response handleRequest(App &app, const http::Request &req) {
         const auto keys = parseS3DeleteKeys(req.body);
         return makeEmptyResponse(app.s3Delete(req.path, keys).status);
       } catch (const std::exception &) {
-        return makeEmptyResponse(500);
+        return makeS3ErrorResponse(400, "MalformedXML",
+                                   "The XML you provided was not well-formed",
+                                   req.path);
       }
     }
 
     if (!req.getParamValue("uploadId").empty()) {
       try {
         const auto parts = parseS3MultipartPartNumbers(req.body);
+        if (app.getRecord(req.path).deleted == record::Deleted::NO) {
+          return makeS3ErrorResponse(403, "AccessDenied",
+                                     "Object already exists", req.path);
+        }
+
         const auto result = app.completeMultipartUpload(
             req.path, req.getParamValue("uploadId"), parts);
+        if (result.status == 403) {
+          return makeS3ErrorResponse(404, "NoSuchUpload",
+                                     "Multipart upload does not exist or is "
+                                     "missing a requested part",
+                                     req.path);
+        }
+
         auto res = http::Response{};
         res.status = result.status;
         if (!result.body.empty()) {
@@ -1050,7 +1096,9 @@ http::Response handleRequest(App &app, const http::Request &req) {
         }
         return res;
       } catch (const std::exception &) {
-        return makeEmptyResponse(500);
+        return makeS3ErrorResponse(400, "MalformedXML",
+                                   "The XML you provided was not well-formed",
+                                   req.path);
       }
     }
 
@@ -1064,8 +1112,13 @@ http::Response handleRequest(App &app, const http::Request &req) {
     }
 
     if (req.method == "DELETE" && !req.getParamValue("uploadId").empty()) {
-      return makeEmptyResponse(
-          app.abortMultipartUpload(req.getParamValue("uploadId")));
+      const auto abort_status =
+          app.abortMultipartUpload(req.getParamValue("uploadId"));
+      if (abort_status == 404) {
+        return makeS3ErrorResponse(404, "NoSuchUpload",
+                                   "Multipart upload does not exist", req.path);
+      }
+      return makeEmptyResponse(abort_status);
     }
 
     const auto result =
@@ -1086,6 +1139,7 @@ http::Response handleRequest(App &app, const http::Request &req) {
 }
 
 void registerRoutes(http::Server &server, App &app) {
+  server.setBodyLimit(app.options().max_body_size);
   server.setHandler(
       [&app](const http::Request &req) { return handleRequest(app, req); });
 }

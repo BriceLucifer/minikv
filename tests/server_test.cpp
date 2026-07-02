@@ -623,6 +623,45 @@ TEST(ServerRouteTest, PutRouteRejectsEmptyBodyWithoutWritingRecord) {
   cleanup();
 }
 
+TEST(ServerRouteTest, PutRouteRejectsBodyOverProductionLimitBeforeWrite) {
+  auto remote_put_called = false;
+
+  LocalVolumeServer volume;
+  volume.server.Put(R"(/.*)", [&](const minikv::http::Request &,
+                                  minikv::http::Response &res) {
+    remote_put_called = true;
+    res.status = 201;
+  });
+  volume.start();
+
+  auto options = appOptions("route-put-body-limit");
+  options.volumes = {volume.volume()};
+  options.replicas = 1;
+  options.subvolumes = 1;
+  options.max_body_size = 4;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    LocalVolumeServer master;
+    minikv::server::registerRoutes(master.server, app);
+    master.start();
+
+    minikv::test::TestClient client("http://" + master.volume());
+    const auto res =
+        client.Put("/too-large", "12345", "application/octet-stream");
+
+    ASSERT_TRUE(res);
+    EXPECT_EQ(res->status, 413);
+    EXPECT_TRUE(res->body.empty());
+    EXPECT_FALSE(remote_put_called);
+    EXPECT_EQ(app.getRecord("/too-large").deleted,
+              minikv::record::Deleted::HARD);
+  }
+
+  cleanup();
+}
+
 TEST(ServerRouteTest, PutRouteRejectsOverwriteOfLiveRecord) {
   auto remote_put_called = false;
 
@@ -1208,7 +1247,8 @@ TEST(ServerRouteTest, S3BulkDeleteRejectsMalformedXmlWithoutDeleting) {
         "/bucket?delete", "<Delete><Object><Key>alpha.txt</Object></Delete>");
 
     ASSERT_TRUE(res);
-    EXPECT_EQ(res->status, 500);
+    EXPECT_EQ(res->status, 400);
+    EXPECT_NE(res->body.find("<Code>MalformedXML</Code>"), std::string::npos);
     EXPECT_FALSE(remote_delete_called);
     EXPECT_EQ(app.getRecord("/bucket/alpha.txt").deleted,
               minikv::record::Deleted::NO);
@@ -1330,7 +1370,9 @@ TEST(ServerRouteTest, S3MultipartRejectsUnknownUploadIdAndMissingParts) {
         client.Put("/bucket/object?partNumber=1&uploadId=missing", "body",
                    "application/octet-stream");
     ASSERT_TRUE(unknown_part);
-    EXPECT_EQ(unknown_part->status, 403);
+    EXPECT_EQ(unknown_part->status, 404);
+    EXPECT_NE(unknown_part->body.find("<Code>NoSuchUpload</Code>"),
+              std::string::npos);
 
     const auto init = client.Post("/bucket/object?uploads", "");
     ASSERT_TRUE(init);
@@ -1345,7 +1387,9 @@ TEST(ServerRouteTest, S3MultipartRejectsUnknownUploadIdAndMissingParts) {
     const auto missing_part =
         client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
     ASSERT_TRUE(missing_part);
-    EXPECT_EQ(missing_part->status, 403);
+    EXPECT_EQ(missing_part->status, 404);
+    EXPECT_NE(missing_part->body.find("<Code>NoSuchUpload</Code>"),
+              std::string::npos);
     EXPECT_FALSE(remote_put_called);
     EXPECT_EQ(app.getRecord("/bucket/object").deleted,
               minikv::record::Deleted::HARD);
@@ -1403,7 +1447,9 @@ TEST(ServerRouteTest, S3MultipartMissingPartCanBeUploadedAndRetried) {
     const auto missing_part =
         client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
     ASSERT_TRUE(missing_part);
-    EXPECT_EQ(missing_part->status, 403);
+    EXPECT_EQ(missing_part->status, 404);
+    EXPECT_NE(missing_part->body.find("<Code>NoSuchUpload</Code>"),
+              std::string::npos);
     EXPECT_TRUE(received_body.empty());
 
     const auto second =
@@ -1451,7 +1497,7 @@ TEST(ServerRouteTest, S3MultipartInitRejectsExistingLiveObject) {
 
     ASSERT_TRUE(init);
     EXPECT_EQ(init->status, 403);
-    EXPECT_TRUE(init->body.empty());
+    EXPECT_NE(init->body.find("<Code>AccessDenied</Code>"), std::string::npos);
   }
 
   cleanup();
@@ -1543,10 +1589,14 @@ TEST(ServerRouteTest, S3MultipartAbortRemovesPartsWithoutDeletingObject) {
         client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
     ASSERT_TRUE(complete);
     EXPECT_EQ(complete->status, 403);
+    EXPECT_NE(complete->body.find("<Code>AccessDenied</Code>"),
+              std::string::npos);
 
     const auto unknown = client.Delete("/bucket/object?uploadId=missing");
     ASSERT_TRUE(unknown);
     EXPECT_EQ(unknown->status, 404);
+    EXPECT_NE(unknown->body.find("<Code>NoSuchUpload</Code>"),
+              std::string::npos);
 
     const auto live_after_rejects = app.getRecord("/bucket/object");
     EXPECT_EQ(live_after_rejects.deleted, minikv::record::Deleted::NO);
@@ -1609,7 +1659,9 @@ TEST(ServerRouteTest, S3MultipartExpiredUploadRemovesPartsAndRejectsRetry) {
         client.Put("/bucket/object?partNumber=2&uploadId=" + upload_id,
                    "too late", "application/octet-stream");
     ASSERT_TRUE(second);
-    EXPECT_EQ(second->status, 403);
+    EXPECT_EQ(second->status, 404);
+    EXPECT_NE(second->body.find("<Code>NoSuchUpload</Code>"),
+              std::string::npos);
     EXPECT_FALSE(std::filesystem::exists(part_one));
 
     const auto complete_xml =
@@ -1619,7 +1671,9 @@ TEST(ServerRouteTest, S3MultipartExpiredUploadRemovesPartsAndRejectsRetry) {
     const auto complete =
         client.Post("/bucket/object?uploadId=" + upload_id, complete_xml);
     ASSERT_TRUE(complete);
-    EXPECT_EQ(complete->status, 403);
+    EXPECT_EQ(complete->status, 404);
+    EXPECT_NE(complete->body.find("<Code>NoSuchUpload</Code>"),
+              std::string::npos);
     EXPECT_FALSE(remote_put_called);
     EXPECT_EQ(app.getRecord("/bucket/object").deleted,
               minikv::record::Deleted::HARD);
@@ -1711,7 +1765,8 @@ TEST(ServerRouteTest, S3MultipartCompleteRejectsObjectMadeLiveAfterInit) {
 
     ASSERT_TRUE(complete);
     EXPECT_EQ(complete->status, 403);
-    EXPECT_TRUE(complete->body.empty());
+    EXPECT_NE(complete->body.find("<Code>AccessDenied</Code>"),
+              std::string::npos);
     EXPECT_FALSE(remote_put_called);
 
     const auto rec = app.getRecord("/bucket/object");

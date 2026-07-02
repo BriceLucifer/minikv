@@ -46,13 +46,13 @@ set(BOOST_ENABLE_CMAKE ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
   leveldb
   GIT_REPOSITORY https://github.com/google/leveldb.git
-  GIT_TAG main
+  GIT_TAG 7ee830d02b623e8ffe0b95d59a74db1e58da04c5
 )
 
 FetchContent_Declare(
   boringssl
   GIT_REPOSITORY https://github.com/google/boringssl.git
-  GIT_TAG main
+  GIT_TAG e3ca87bd0c240ef7d142ced16ddf87889ffc622e
 )
 
 FetchContent_Declare(

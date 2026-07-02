@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <random>
@@ -27,6 +28,7 @@ struct AppOptions {
   bool md5sum = true;
   std::chrono::milliseconds volume_timeout{1000};
   std::chrono::milliseconds multipart_upload_ttl{std::chrono::hours{24}};
+  std::uint64_t max_body_size = 1024ULL * 1024ULL * 1024ULL;
 };
 
 struct WriteResult {

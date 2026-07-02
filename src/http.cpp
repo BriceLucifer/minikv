@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <future>
 #include <limits>
@@ -236,6 +237,8 @@ public:
     handler_ = std::move(handler);
   }
 
+  void setBodyLimit(std::uint64_t bytes) { body_limit_ = bytes; }
+
   int bindToAnyPort(std::string_view address) {
     auto ec = boost::system::error_code{};
     auto endpoint =
@@ -352,7 +355,7 @@ private:
     try {
       auto buffer = beast::flat_buffer{};
       auto parser = bhttp::request_parser<bhttp::string_body>{};
-      parser.body_limit(std::numeric_limits<std::uint64_t>::max());
+      parser.body_limit(body_limit_);
       bhttp::read(socket, buffer, parser);
       auto req = parser.release();
 
@@ -364,6 +367,17 @@ private:
 
       auto ec = boost::system::error_code{};
       (void)socket.shutdown(tcp::socket::shutdown_send, ec);
+    } catch (const boost::system::system_error &ex) {
+      if (ex.code() == bhttp::error::body_limit) {
+        auto res =
+            bhttp::response<bhttp::string_body>{bhttp::status::payload_too_large,
+                                                11};
+        res.content_length(0);
+        res.keep_alive(false);
+        auto ec = boost::system::error_code{};
+        (void)bhttp::write(socket, res, ec);
+        (void)socket.shutdown(tcp::socket::shutdown_send, ec);
+      }
     } catch (const std::exception &ex) {
       (void)ex;
     }
@@ -397,6 +411,7 @@ private:
   asio::thread_pool workers_;
   std::atomic_bool ready_{false};
   std::atomic_bool stopped_{false};
+  std::uint64_t body_limit_ = std::numeric_limits<std::uint64_t>::max();
   int port_ = -1;
 };
 
@@ -417,6 +432,8 @@ Server &Server::operator=(Server &&) noexcept = default;
 void Server::setHandler(Handler handler) {
   impl_->setHandler(std::move(handler));
 }
+
+void Server::setBodyLimit(std::uint64_t bytes) { impl_->setBodyLimit(bytes); }
 
 int Server::bindToAnyPort(std::string_view address) {
   return impl_->bindToAnyPort(address);

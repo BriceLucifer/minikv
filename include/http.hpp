@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -48,6 +49,7 @@ public:
   Server &operator=(Server &&) noexcept;
 
   void setHandler(Handler handler);
+  void setBodyLimit(std::uint64_t bytes);
   [[nodiscard]] int bindToAnyPort(std::string_view address);
   [[nodiscard]] bool listen(std::string_view address, int port);
   bool listenAfterBind();

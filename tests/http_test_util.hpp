@@ -2,6 +2,7 @@
 
 #include "http.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -78,6 +79,8 @@ public:
     server_.setHandler(std::move(handler));
     custom_handler_ = true;
   }
+
+  void setBodyLimit(std::uint64_t bytes) { server_.setBodyLimit(bytes); }
 
   int bindToAnyPort(std::string_view address) {
     installDispatcher();

@@ -303,7 +303,7 @@ Compatibility is verified by real deploy-style tests, not only unit tests:
 - `S3CompatTest` mirrors upstream `tools/s3test.py` with real boto3/PyArrow
   clients; strict mode requires those dependencies and runs the large parquet
   multipart roundtrip.
-- The current debug preset passes `ctest --preset debug` with all 94 tests.
+- The current debug preset passes `ctest --preset debug` with all 98 tests.
 
 The C++ rewrite is intentionally stronger than upstream in several places:
 
@@ -313,19 +313,23 @@ The C++ rewrite is intentionally stronger than upstream in several places:
   redirect model.
 - S3 list entries include `Size`, `ETag`, `LastModified`, and `StorageClass`.
 - AWS SDK `aws-chunked` request bodies are decoded before replica writes.
+- HTTP request bodies are bounded by `-maxbodysize` so one oversized upload
+  cannot grow master memory without a configured limit.
 - Multipart scratch space is per database path, cleaned at startup, can expire
   while the process is running, and multipart completion streams part files to
   replicas instead of first building one full object string.
+- Common S3 failures return XML error bodies with S3-style error codes such as
+  `AccessDenied`, `MalformedXML`, `InvalidArgument`, and `NoSuchUpload`.
 - Production templates are provided for systemd master and nginx volume
   services.
+- CMake pins fetched LevelDB and BoringSSL revisions for reproducible release
+  builds.
 
 Known remaining gaps before calling the rewrite production-complete:
 
-- S3 error responses are upstream-compatible enough for the tested clients, but
-  they are still minimal HTTP statuses, not AWS-compatible XML error documents.
 - There is no checked-in benchmark report yet for the five-volume topology.
-- Operational guidance exists, but backup/restore drills, monitoring metrics,
-  and capacity/retention policy examples still need concrete runbooks.
+- The master still materializes accepted `PUT` request bodies in memory up to
+  `-maxbodysize`; size that limit for your object mix and worker count.
 - Authentication and TLS are expected to sit in front of the service; they are
   not built into the master.
 
@@ -350,6 +354,7 @@ Start the C++ master:
   -volumes localhost:3001,localhost:3002,localhost:3003 \
   -db /tmp/indexdb \
   -multipartttl 24h \
+  -maxbodysize 1G \
   server
 ```
 
@@ -462,6 +467,10 @@ Edit `/etc/minikv/master.env` before starting production. `MINIKV_VOLUMES`
 must list every volume address the master should use, and
 `MINIKV_REPLICAS` must be no larger than that list. Keep `MINIKV_SUBVOLUMES`
 stable for an existing deployment unless you are deliberately rebalancing.
+Set `MINIKV_MAX_BODY_SIZE` to the largest accepted single request body. The
+default template uses `1G`, matching the upstream target object range, but the
+master can have roughly `active writes * max body size` resident before replica
+writes complete.
 
 Before accepting traffic, run the same gates used by this repo:
 
@@ -481,17 +490,49 @@ repository-local test environment:
 tests/ensure_python_test_env.sh
 ```
 
-Operational notes:
+Production runbook:
 
-- Back up the LevelDB directory and volume files together when possible.
-- Use `UNLINK` plus `?unlinked` if you want a protected delete workflow.
-- Use `rebuild` to reconstruct LevelDB metadata from volume files after losing
-  the index.
-- Use `rebalance` after changing the preferred volume list; stop the master
-  first because LevelDB allows one process at a time.
-- Watch nginx disk usage and the master `*.multipart` scratch directory.
+- Backup: take filesystem snapshots of `/var/lib/minikv/indexdb` and every
+  volume root together when possible. If snapshots cannot be atomic, snapshot
+  volume roots first, then LevelDB, and run a restore drill before trusting the
+  backup policy.
+- Restore drill: restore volumes to a staging host, start nginx volume services,
+  run `mkv -volumes ... -db /tmp/rebuilt-index rebuild`, then run HTTP and S3
+  compatibility tests against that staging topology.
+- Rebuild: stop the master before rebuilding a production index. Rebuild into a
+  new DB path first, then swap the service env to the rebuilt path after
+  validation.
+- Rebalance: stop the master, update `MINIKV_VOLUMES`, run `rebalance`, then
+  restart the master. Keep old volumes online until `Key-Balance` reports
+  balanced for sampled hot keys and the rebalance command exits cleanly.
+- Delete workflow: use `-protect` with `UNLINK` plus `?unlinked` when operators
+  need a review window before physically deleting volume files.
+- Monitoring: alert on 5xx responses, 409 conflicts, 413 payload rejections,
+  volume `HEAD`/`PUT`/`DELETE` failures, LevelDB open/write failures, nginx
+  disk usage, inode usage, master RSS, and growth of the `*.multipart`
+  scratch directory.
+- Capacity: keep free space above one full replica set of your largest expected
+  object batch. For agent artifact storage, define retention per key prefix and
+  run periodic `?list` scans from your metadata DB ownership model.
 - Keep volume ports private to trusted clients or put authentication/TLS in
   front of the master and volumes.
+
+Benchmark gate:
+
+```bash
+cmake --preset release
+cmake --build --preset release
+
+# Start the same five-volume nginx topology used by S3CompatTest, then measure:
+# - missing-key GET requests/sec
+# - PUT/GET/DELETE throughput for representative object sizes
+# - p50/p95/p99 latency and error counts
+# - master RSS while concurrent writes approach MINIKV_MAX_BODY_SIZE
+```
+
+Record hardware, filesystem, object size mix, replica count, subvolume count,
+worker count, `MINIKV_MAX_BODY_SIZE`, and volume paths with every benchmark so
+future changes are comparable.
 
 ## Release Build
 
