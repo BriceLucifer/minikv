@@ -230,7 +230,9 @@ void Response::set_content(std::string content, std::string content_type) {
 
 class Server::Impl {
 public:
-  Impl() : acceptor_(io_), workers_(workerCount()) {}
+  Impl()
+      : acceptor_(io_),
+        workers_(std::make_unique<asio::thread_pool>(workerCount())) {}
 
   void setHandler(Handler handler) {
     auto lock = std::scoped_lock{handler_mutex_};
@@ -238,6 +240,16 @@ public:
   }
 
   void setBodyLimit(std::uint64_t bytes) { body_limit_ = bytes; }
+
+  void setWorkerCount(std::size_t count) {
+    if (ready_.load()) {
+      throw std::runtime_error("cannot change HTTP workers after listen");
+    }
+    if (count == 0) {
+      count = workerCount();
+    }
+    workers_ = std::make_unique<asio::thread_pool>(count);
+  }
 
   int bindToAnyPort(std::string_view address) {
     auto ec = boost::system::error_code{};
@@ -313,7 +325,7 @@ public:
         break;
       }
 
-      asio::post(workers_, [this, socket = std::move(socket)]() mutable {
+      asio::post(*workers_, [this, socket = std::move(socket)]() mutable {
         handleSession(std::move(socket));
       });
     }
@@ -339,8 +351,8 @@ public:
     auto ec = boost::system::error_code{};
     (void)acceptor_.close(ec);
     io_.stop();
-    workers_.stop();
-    workers_.join();
+    workers_->stop();
+    workers_->join();
   }
 
   int port() const { return port_; }
@@ -369,9 +381,8 @@ private:
       (void)socket.shutdown(tcp::socket::shutdown_send, ec);
     } catch (const boost::system::system_error &ex) {
       if (ex.code() == bhttp::error::body_limit) {
-        auto res =
-            bhttp::response<bhttp::string_body>{bhttp::status::payload_too_large,
-                                                11};
+        auto res = bhttp::response<bhttp::string_body>{
+            bhttp::status::payload_too_large, 11};
         res.content_length(0);
         res.keep_alive(false);
         auto ec = boost::system::error_code{};
@@ -408,7 +419,7 @@ private:
   Handler handler_;
   asio::io_context io_;
   tcp::acceptor acceptor_;
-  asio::thread_pool workers_;
+  std::unique_ptr<asio::thread_pool> workers_;
   std::atomic_bool ready_{false};
   std::atomic_bool stopped_{false};
   std::uint64_t body_limit_ = std::numeric_limits<std::uint64_t>::max();
@@ -434,6 +445,8 @@ void Server::setHandler(Handler handler) {
 }
 
 void Server::setBodyLimit(std::uint64_t bytes) { impl_->setBodyLimit(bytes); }
+
+void Server::setWorkerCount(std::size_t count) { impl_->setWorkerCount(count); }
 
 int Server::bindToAnyPort(std::string_view address) {
   return impl_->bindToAnyPort(address);

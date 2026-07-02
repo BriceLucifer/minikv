@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -138,6 +139,8 @@ TEST(ServerAppTest, StoresOptions) {
     EXPECT_EQ(app.options().md5sum, options.md5sum);
     EXPECT_EQ(app.options().volume_timeout, options.volume_timeout);
     EXPECT_EQ(app.options().multipart_upload_ttl, options.multipart_upload_ttl);
+    EXPECT_EQ(app.options().http_workers, options.http_workers);
+    EXPECT_EQ(app.options().parallel_replica_io, options.parallel_replica_io);
   }
 
   cleanup();
@@ -226,6 +229,48 @@ TEST(ServerAppTest, WriteToReplicasStoresRemoteBodyAndFinalRecord) {
     EXPECT_EQ(loaded.rvolumes, result.record.rvolumes);
     EXPECT_EQ(loaded.deleted, result.record.deleted);
     EXPECT_EQ(loaded.hash, result.record.hash);
+  }
+
+  cleanup();
+}
+
+TEST(ServerAppTest, WriteToReplicasWritesRemoteVolumesInParallel) {
+  auto started = std::atomic<int>{0};
+  auto handler = [&](const minikv::http::Request &,
+                     minikv::http::Response &res) {
+    started.fetch_add(1);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+    while (started.load() < 2 && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    res.status = 201;
+  };
+
+  LocalVolumeServer first;
+  first.server.Put(R"(/.*)", handler);
+  first.start();
+
+  LocalVolumeServer second;
+  second.server.Put(R"(/.*)", handler);
+  second.start();
+
+  auto options = appOptions("write-to-replicas-parallel");
+  options.volumes = {first.volume(), second.volume()};
+  options.replicas = 2;
+  options.subvolumes = 1;
+  options.parallel_replica_io = true;
+  const auto cleanup = [&] { std::filesystem::remove_all(options.db_path); };
+
+  {
+    minikv::server::App app{options};
+    const auto start = std::chrono::steady_clock::now();
+    const auto result = app.writeToReplicas("/hello", "payload");
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+
+    EXPECT_EQ(result.status, 201);
+    EXPECT_EQ(started.load(), 2);
+    EXPECT_LT(elapsed, std::chrono::milliseconds{450});
   }
 
   cleanup();

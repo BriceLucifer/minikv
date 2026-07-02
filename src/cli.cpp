@@ -1,7 +1,8 @@
 #include "cli.hpp"
 
-#include <chrono>
 #include <charconv>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -15,6 +16,18 @@ bool parseInt(std::string_view value, int &out) {
   const auto *begin = value.data();
   const auto *end = value.data() + value.size();
   auto parsed = 0;
+  const auto result = std::from_chars(begin, end, parsed);
+  if (result.ec != std::errc{} || result.ptr != end) {
+    return false;
+  }
+  out = parsed;
+  return true;
+}
+
+bool parseSizeT(std::string_view value, std::size_t &out) {
+  const auto *begin = value.data();
+  const auto *end = value.data() + value.size();
+  auto parsed = std::size_t{0};
   const auto result = std::from_chars(begin, end, parsed);
   if (result.ec != std::errc{} || result.ptr != end) {
     return false;
@@ -128,6 +141,11 @@ std::string usage() {
          "        TTL for abandoned multipart uploads (default 24h)\n"
          "  -maxbodysize bytes\n"
          "        Maximum accepted HTTP request body size (default 1G)\n"
+         "  -workers int\n"
+         "        HTTP worker threads, 0 uses hardware concurrency\n"
+         "  -parallelreplicas bool\n"
+         "        Write and delete volume replicas concurrently (default "
+         "false)\n"
          "  -port int\n"
          "        Port for the server to listen on (default 3000)\n"
          "  -protect\n"
@@ -171,13 +189,15 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
       result.options.app.fallback = std::string{nextValue(arg)};
     } else if (arg == "-replicas") {
       const auto value = nextValue(arg);
-      if (!result.error.empty() || !parseInt(value, result.options.app.replicas)) {
+      if (!result.error.empty() ||
+          !parseInt(value, result.options.app.replicas)) {
         result.error = "invalid -replicas";
         return result;
       }
     } else if (arg == "-subvolumes") {
       const auto value = nextValue(arg);
-      if (!result.error.empty() || !parseInt(value, result.options.app.subvolumes)) {
+      if (!result.error.empty() ||
+          !parseInt(value, result.options.app.subvolumes)) {
         result.error = "invalid -subvolumes";
         return result;
       }
@@ -224,6 +244,27 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
         result.error = "invalid -maxbodysize";
         return result;
       }
+    } else if (arg == "-workers") {
+      const auto value = nextValue(arg);
+      if (!result.error.empty() ||
+          !parseSizeT(value, result.options.app.http_workers)) {
+        result.error = "invalid -workers";
+        return result;
+      }
+    } else if (arg == "-parallelreplicas") {
+      const auto value = nextValue(arg);
+      if (!result.error.empty() ||
+          !parseBool(value, result.options.app.parallel_replica_io)) {
+        result.error = "invalid -parallelreplicas";
+        return result;
+      }
+    } else if (arg.starts_with("-parallelreplicas=")) {
+      auto parsed = false;
+      if (!parseBool(arg.substr(18), parsed)) {
+        result.error = "invalid -parallelreplicas";
+        return result;
+      }
+      result.options.app.parallel_replica_io = parsed;
     } else if (arg.starts_with('-')) {
       result.error = "unknown flag " + std::string{arg};
       return result;
@@ -235,7 +276,8 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
     }
   }
 
-  if (result.options.command != "server" && result.options.command != "rebuild" &&
+  if (result.options.command != "server" &&
+      result.options.command != "rebuild" &&
       result.options.command != "rebalance") {
     result.error = usage();
     return result;
@@ -264,6 +306,11 @@ ParseResult parseCommandLine(const std::vector<std::string> &args) {
 
   if (result.options.app.subvolumes <= 0) {
     result.error = "invalid -subvolumes";
+    return result;
+  }
+
+  if (result.options.app.http_workers > 1024) {
+    result.error = "invalid -workers";
     return result;
   }
 

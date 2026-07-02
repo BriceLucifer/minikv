@@ -14,7 +14,9 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <numeric>
@@ -104,6 +106,47 @@ std::string remoteUrl(std::string_view volume, std::string_view keypath) {
   remote += volume;
   remote += keypath;
   return remote;
+}
+
+template <typename Fn>
+bool runReplicaOperationParallel(std::string_view operation,
+                                 const std::vector<std::string> &volumes,
+                                 std::string_view keypath, Fn &&fn) {
+  auto futures = std::vector<std::pair<std::string, std::future<void>>>{};
+  futures.reserve(volumes.size());
+  for (const auto &volume : volumes) {
+    auto remote = remoteUrl(volume, keypath);
+    futures.emplace_back(
+        remote, std::async(std::launch::async, [remote, &fn] { fn(remote); }));
+  }
+
+  auto ok = true;
+  for (auto &[remote, future] : futures) {
+    try {
+      future.get();
+    } catch (const std::exception &ex) {
+      std::cerr << operation << " error " << ex.what() << " " << remote << '\n';
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+template <typename Fn>
+bool runReplicaOperationSerial(std::string_view operation,
+                               const std::vector<std::string> &volumes,
+                               std::string_view keypath, Fn &&fn) {
+  auto ok = true;
+  for (const auto &volume : volumes) {
+    const auto remote = remoteUrl(volume, keypath);
+    try {
+      fn(remote);
+    } catch (const std::exception &ex) {
+      std::cerr << operation << " error " << ex.what() << " " << remote << '\n';
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 bool containsCaseInsensitive(std::string_view haystack,
@@ -458,17 +501,20 @@ WriteResult App::writeToReplicas(std::string_view key, std::string_view value) {
     return {500, pending};
   }
 
-  auto keypath = placement::key2path(key);
-  for (const auto &volume : kvolumes) {
+  const auto keypath = placement::key2path(key);
+  const auto write_replica = [&](const std::string &remote) {
     // Values are already materialized as a string_view here, unlike Go's
     // one-shot io.Reader, so each replica can reuse the same buffer.
-    const auto remote = remoteUrl(volume, keypath);
-    try {
-      volume_client::remotePut(remote, value);
-    } catch (const std::exception &ex) {
-      (void)ex;
-      return {500, pending};
-    }
+    volume_client::remotePut(remote, value);
+  };
+  const auto replicas_written =
+      options_.parallel_replica_io
+          ? runReplicaOperationParallel("replica put", kvolumes, keypath,
+                                        write_replica)
+          : runReplicaOperationSerial("replica put", kvolumes, keypath,
+                                      write_replica);
+  if (!replicas_written) {
+    return {500, pending};
   }
 
   auto committed = record::Record{
@@ -495,15 +541,18 @@ App::writeFilesToReplicas(std::string_view key,
     return {500, pending};
   }
 
-  auto keypath = placement::key2path(key);
-  for (const auto &volume : kvolumes) {
-    const auto remote = remoteUrl(volume, keypath);
-    try {
-      volume_client::remotePutFiles(remote, paths, content_length);
-    } catch (const std::exception &ex) {
-      (void)ex;
-      return {500, pending};
-    }
+  const auto keypath = placement::key2path(key);
+  const auto write_replica_files = [&](const std::string &remote) {
+    volume_client::remotePutFiles(remote, paths, content_length);
+  };
+  const auto replicas_written =
+      options_.parallel_replica_io
+          ? runReplicaOperationParallel("replica put files", kvolumes, keypath,
+                                        write_replica_files)
+          : runReplicaOperationSerial("replica put files", kvolumes, keypath,
+                                      write_replica_files);
+  if (!replicas_written) {
+    return {500, pending};
   }
 
   auto committed = record::Record{
@@ -604,18 +653,16 @@ DeleteResult App::deleteFromReplicas(std::string_view key, bool unlink) {
   }
 
   const auto keypath = placement::key2path(key);
-  auto delete_error = false;
-  for (const auto &volume : rec.rvolumes) {
-    const auto remote = remoteUrl(volume, keypath);
-    try {
-      volume_client::remoteDelete(remote);
-    } catch (const std::exception &ex) {
-      (void)ex;
-      delete_error = true;
-    }
-  }
-
-  if (delete_error) {
+  const auto delete_replica = [](const std::string &remote) {
+    volume_client::remoteDelete(remote);
+  };
+  const auto replicas_deleted =
+      options_.parallel_replica_io
+          ? runReplicaOperationParallel("replica delete", rec.rvolumes, keypath,
+                                        delete_replica)
+          : runReplicaOperationSerial("replica delete", rec.rvolumes, keypath,
+                                      delete_replica);
+  if (!replicas_deleted) {
     return {500, pending};
   }
 
@@ -993,8 +1040,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
     }
 
     if (app.getRecord(req.path).deleted == record::Deleted::NO) {
-      return makeS3ErrorResponse(403, "AccessDenied",
-                                 "Object already exists", req.path);
+      return makeS3ErrorResponse(403, "AccessDenied", "Object already exists",
+                                 req.path);
     }
 
     if (const auto part_number = req.getParamValue("partNumber");
@@ -1008,9 +1055,9 @@ http::Response handleRequest(App &app, const http::Request &req) {
                                    "Invalid multipart part number", req.path);
       }
 
-      const auto part_status = app.writeMultipartPart(
-          req.getParamValue("uploadId"), static_cast<int>(parsed_part_number),
-          body);
+      const auto part_status =
+          app.writeMultipartPart(req.getParamValue("uploadId"),
+                                 static_cast<int>(parsed_part_number), body);
       if (part_status == 403) {
         return makeS3ErrorResponse(404, "NoSuchUpload",
                                    "Multipart upload does not exist", req.path);
@@ -1042,8 +1089,8 @@ http::Response handleRequest(App &app, const http::Request &req) {
     if (operation == "uploads") {
       const auto result = app.createMultipartUpload(req.path);
       if (result.status == 403) {
-        return makeS3ErrorResponse(403, "AccessDenied",
-                                   "Object already exists", req.path);
+        return makeS3ErrorResponse(403, "AccessDenied", "Object already exists",
+                                   req.path);
       }
 
       auto res = http::Response{};
@@ -1140,6 +1187,7 @@ http::Response handleRequest(App &app, const http::Request &req) {
 
 void registerRoutes(http::Server &server, App &app) {
   server.setBodyLimit(app.options().max_body_size);
+  server.setWorkerCount(app.options().http_workers);
   server.setHandler(
       [&app](const http::Request &req) { return handleRequest(app, req); });
 }

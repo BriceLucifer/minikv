@@ -27,12 +27,11 @@ TEST(CliTest, ParsesServerCommandAndGoStyleDefaults) {
   EXPECT_EQ(result.options.command, "server");
   EXPECT_EQ(result.options.port, 3000);
   EXPECT_EQ(result.options.app.db_path, "/tmp/indexdb");
-  EXPECT_EQ(result.options.app.volumes,
-            (std::vector<std::string>{
-                "localhost:3001",
-                "localhost:3002",
-                "localhost:3003",
-            }));
+  EXPECT_EQ(result.options.app.volumes, (std::vector<std::string>{
+                                            "localhost:3001",
+                                            "localhost:3002",
+                                            "localhost:3003",
+                                        }));
   EXPECT_EQ(result.options.app.replicas, 3);
   EXPECT_EQ(result.options.app.subvolumes, 10);
   EXPECT_FALSE(result.options.app.protect);
@@ -40,6 +39,8 @@ TEST(CliTest, ParsesServerCommandAndGoStyleDefaults) {
   EXPECT_EQ(result.options.app.volume_timeout, std::chrono::seconds{1});
   EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{24});
   EXPECT_EQ(result.options.app.max_body_size, 1024ULL * 1024ULL * 1024ULL);
+  EXPECT_EQ(result.options.app.http_workers, 0U);
+  EXPECT_FALSE(result.options.app.parallel_replica_io);
 }
 
 TEST(CliTest, ParsesConfiguredFlags) {
@@ -64,6 +65,10 @@ TEST(CliTest, ParsesConfiguredFlags) {
       "2h",
       "-maxbodysize",
       "512M",
+      "-workers",
+      "32",
+      "-parallelreplicas",
+      "true",
       "-v",
       "server",
   });
@@ -80,6 +85,8 @@ TEST(CliTest, ParsesConfiguredFlags) {
   EXPECT_EQ(result.options.app.volume_timeout, std::chrono::milliseconds{250});
   EXPECT_EQ(result.options.app.multipart_upload_ttl, std::chrono::hours{2});
   EXPECT_EQ(result.options.app.max_body_size, 512ULL * 1024ULL * 1024ULL);
+  EXPECT_EQ(result.options.app.http_workers, 32U);
+  EXPECT_TRUE(result.options.app.parallel_replica_io);
   EXPECT_TRUE(result.options.verbose);
 }
 
@@ -191,4 +198,28 @@ TEST(CliTest, RejectsInvalidProductionSizingFlags) {
   });
   EXPECT_FALSE(bad_body_size.ok);
   EXPECT_EQ(bad_body_size.error, "invalid -maxbodysize");
+
+  const auto bad_workers = parse({
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "-workers",
+      "1025",
+      "server",
+  });
+  EXPECT_FALSE(bad_workers.ok);
+  EXPECT_EQ(bad_workers.error, "invalid -workers");
+
+  const auto bad_parallel_replicas = parse({
+      "-db",
+      "/tmp/db",
+      "-volumes",
+      "a:1,b:2,c:3",
+      "-parallelreplicas",
+      "maybe",
+      "server",
+  });
+  EXPECT_FALSE(bad_parallel_replicas.ok);
+  EXPECT_EQ(bad_parallel_replicas.error, "invalid -parallelreplicas");
 }

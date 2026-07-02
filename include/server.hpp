@@ -29,6 +29,8 @@ struct AppOptions {
   std::chrono::milliseconds volume_timeout{1000};
   std::chrono::milliseconds multipart_upload_ttl{std::chrono::hours{24}};
   std::uint64_t max_body_size = 1024ULL * 1024ULL * 1024ULL;
+  std::size_t http_workers = 0;
+  bool parallel_replica_io = false;
 };
 
 struct WriteResult {
@@ -72,7 +74,7 @@ struct MultipartUploadResult {
 };
 
 class App {
- public:
+public:
   explicit App(AppOptions options);
 
   bool lockKey(std::string_view key);
@@ -95,19 +97,20 @@ class App {
   int writeMultipartPart(std::string_view upload_id, int part_number,
                          std::string_view body);
   int abortMultipartUpload(std::string_view upload_id);
-  MultipartUploadResult completeMultipartUpload(
-      std::string_view key, std::string_view upload_id,
-      const std::vector<int> &part_numbers);
+  MultipartUploadResult
+  completeMultipartUpload(std::string_view key, std::string_view upload_id,
+                          const std::vector<int> &part_numbers);
 
   const AppOptions &options() const;
 
- private:
+private:
   std::filesystem::path multipartRoot() const;
   std::filesystem::path multipartPartPath(std::string_view upload_id,
                                           int part_number) const;
-  WriteResult writeFilesToReplicas(
-      std::string_view key, const std::vector<std::filesystem::path> &paths,
-      std::uint64_t content_length, std::string_view hash);
+  WriteResult
+  writeFilesToReplicas(std::string_view key,
+                       const std::vector<std::filesystem::path> &paths,
+                       std::uint64_t content_length, std::string_view hash);
   void removeMultipartPartsLocked(std::string_view upload_id);
   void cleanupExpiredMultipartUploadsLocked(
       std::chrono::steady_clock::time_point now);

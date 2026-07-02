@@ -50,6 +50,7 @@ public:
 
   void setHandler(Handler handler);
   void setBodyLimit(std::uint64_t bytes);
+  void setWorkerCount(std::size_t count);
   [[nodiscard]] int bindToAnyPort(std::string_view address);
   [[nodiscard]] bool listen(std::string_view address, int port);
   bool listenAfterBind();
