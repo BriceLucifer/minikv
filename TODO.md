@@ -27,6 +27,11 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
     C++ rewrite and upstream Go on the same MacBook/nginx topology. Remaining
     production-complete gaps are staging benchmark evidence and live
     monitoring/alert validation.
+  - S3 status: ready for the upstream-tested S3 subset, not yet ready to be
+    advertised as a general AWS S3-compatible production endpoint. The biggest
+    functional gaps are SDK `GetObject` without redirect limitations, SigV4 or
+    equivalent auth at the serving edge, complete ListObjectsV2 pagination /
+    delimiter semantics, and broader S3 XML error coverage.
   - Production hardening now includes a configurable HTTP body limit, pinned
     fetched dependency revisions, defensive placement validation, S3-style XML
     error bodies for common failures, and concrete backup/restore/monitoring
@@ -200,6 +205,16 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 ## Next
 
+0. Make the S3 production target explicit.
+   - Current target: upstream `tools/s3test.py` compatibility plus practical
+     boto3/PyArrow write/list/head/delete/multipart workflows.
+   - Not yet true AWS S3 compatibility: boto3 `get_object` is still expected
+     to fail because object reads keep the upstream 302 redirect model; full
+     S3 clients also expect richer XML errors, pagination, bucket semantics,
+     and authentication.
+   - Before exposing this as "S3-ready" production storage, decide whether the
+     service should remain a minikeyvalue-compatible object store with an S3
+     subset, or become a stronger S3-compatible API surface.
 1. Improve S3 error compatibility.
    - Done for common write/multipart failures: `AccessDenied`, `MalformedXML`,
      `InvalidArgument`, and `NoSuchUpload`.
@@ -225,6 +240,40 @@ This file tracks the next steps for the C++23 rewrite of `minikeyvalue`.
 
 ## Remaining Capability Gaps
 
+- S3 production readiness:
+  - P0: SDK `GetObject` support. Today normal `GET` keeps the upstream 302
+    redirect model; boto3 `get_object` remains an expected failure. Production
+    S3 mode needs either master-side proxy streaming, redirect behavior proven
+    with target SDKs, or a documented gateway in front.
+  - P0: Authentication and transport. The master has no SigV4, access keys,
+    IAM/policy model, TLS termination, tenant isolation, or bucket-level auth.
+    Production must provide this at a gateway/reverse proxy or implement it.
+  - P0: Request integrity and conditional semantics. Validate S3 request
+    `Content-MD5` / checksum headers where clients send them, and define
+    behavior for `If-Match`, `If-None-Match`, overwrite, and concurrent writes.
+  - P0: Operational safety for large PUT. Ordinary PUT bodies are still
+    materialized in master memory up to `MINIKV_MAX_BODY_SIZE`; true production
+    S3 writes need streaming-to-temp-file or streaming-to-volume plus explicit
+    backpressure for in-flight writes.
+  - P1: Full ListObjectsV2 semantics. Current list covers the tested subset,
+    but production S3 clients may require `max-keys`, `continuation-token`,
+    `start-after`, `delimiter`, `CommonPrefixes`, `encoding-type`, and stable
+    pagination under mutation.
+  - P1: Broader S3 XML error model. Extend XML errors beyond current
+    write/multipart failures to cover `NoSuchKey`, `NoSuchBucket`-style path
+    errors if buckets are modeled, `MethodNotAllowed`, `EntityTooLarge`,
+    `MissingContentLength`, and throttling/backpressure as `SlowDown` or
+    `ServiceUnavailable`.
+  - P1: Multipart compatibility details. Confirm part ordering, duplicate part
+    numbers, abort idempotency, and whether clients require AWS-style multipart
+    ETags (`md5(part-md5s)-partcount`) instead of the current full-object MD5.
+  - P1: Range and metadata behavior in S3 mode. Range reads work through nginx
+    redirects for HTTP clients, but S3 SDK behavior must be verified once
+    `GetObject` is no longer an expected failure.
+  - P2: Bucket lifecycle and namespace semantics. Decide whether bucket names
+    are only key prefixes or real resources; if real, add create/delete bucket,
+    bucket existence checks, lifecycle/retention hooks, and clearer error
+    behavior.
 - S3 compatibility:
   - Current multipart support matches the upstream route shape and covers the
     real boto3/PyArrow workflows. Common write/multipart failures now return
